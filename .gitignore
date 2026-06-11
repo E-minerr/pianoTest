@@ -1,0 +1,4 @@
+bin/pianoTest.exe
+bin/pianoTest_debug.exe
+obj/
+src_backup_*/
