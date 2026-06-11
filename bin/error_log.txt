@@ -1,0 +1,8 @@
+C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../x86_64-w64-mingw32/bin/ld.exe: obj/msys2/Release/src/ofApp.o:ofApp.cpp:(.text+0x197): undefined reference to `ofApp::centToRatio(float)'
+C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../x86_64-w64-mingw32/bin/ld.exe: obj/msys2/Release/src/ofApp.o:ofApp.cpp:(.text+0x1c7): undefined reference to `ofApp::playOsc(maxiOsc&, maxiOsc&, maxiOsc&, maxiOsc&, ofApp::OscWaveMix&, double)'
+C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../x86_64-w64-mingw32/bin/ld.exe: obj/msys2/Release/src/ofApp.o:ofApp.cpp:(.text+0x1f9): undefined reference to `ofApp::centToRatio(float)'
+C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../x86_64-w64-mingw32/bin/ld.exe: obj/msys2/Release/src/ofApp.o:ofApp.cpp:(.text+0x233): undefined reference to `ofApp::playOsc(maxiOsc&, maxiOsc&, maxiOsc&, maxiOsc&, ofApp::OscWaveMix&, double)'
+C:/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../x86_64-w64-mingw32/bin/ld.exe: obj/msys2/Release/src/ofApp.o:ofApp.cpp:(.rdata$_ZTV5ofApp[_ZTV5ofApp]+0x98): undefined reference to `ofApp::mouseScrolled(int, int, float, float)'
+collect2.exe: error: ld returned 1 exit status
+mingw32-make[1]: *** [../../../libs/openFrameworksCompiled/project/makefileCommon/compile.project.mk:411: bin/pianoTest.exe] Error 1
+mingw32-make: *** [../../../libs/openFrameworksCompiled/project/makefileCommon/compile.project.mk:131: Release] Error 2
