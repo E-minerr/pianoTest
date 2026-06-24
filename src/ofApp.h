@@ -153,6 +153,9 @@ public:
     float masterVolume=1.0f;
 
     SequencerUI* seqUI=nullptr;
+    ofTrueTypeFont jbMonoFont;
+    ofTrueTypeFont jbMonoFont14;
+    ofTrueTypeFont jbMonoFont12;
 
     double playOsc(maxiOsc& saw,maxiOsc& sqr,maxiOsc& tri,maxiOsc& sin,OscWaveMix& mix,double freq);
     double midiToFreq(int note);

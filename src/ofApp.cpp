@@ -1,7 +1,7 @@
 #include "ofApp.h"
 #include "maximilian.h"
 
-// ========== グローバル定数 ==========
+// ========== グローバル定数(旧OSCパネル用、今回は未描画だが関数は保持) ==========
 #define SEC_OSC1   0
 #define SEC_OSC2   250
 #define SEC_FILTER 500
@@ -36,7 +36,7 @@ double ofApp::playOsc(maxiOsc& saw, maxiOsc& sqr, maxiOsc& tri, maxiOsc& sin,
     return out;
 }
 
-// ========== UI描画ヘルパー ==========
+// ========== UI描画ヘルパー(旧OSCパネル用、保持のみ) ==========
 void drawKnob(float cx, float cy, float r, float val, ofColor col) {
     ofSetColor(40);
     ofDrawCircle(cx, cy, r);
@@ -127,182 +127,93 @@ void ofApp::setup() {
     seqUI = new SequencerUI(seqs, MAX_VOICES, noteResolver, harmony);
     seqUI->setBaseBpm(bpm);
 
+    jbMonoFont.load("JetBrainsMono-Regular.ttf", 16);
+    seqUI->jbFont_ = &jbMonoFont;
+    jbMonoFont14.load("JetBrainsMono-Regular.ttf", 14);
+    seqUI->jbFont14_ = &jbMonoFont14;
+    jbMonoFont12.load("JetBrainsMono-Regular.ttf", 12);
+    seqUI->jbFont12_ = &jbMonoFont12;
+
     buildKnobTable();
 }
 
 // ========== update ==========
 void ofApp::update() {
-    if(seqUI) seqUI->setBaseBpm(bpm);
+    if(seqUI){
+        bpm = seqUI->globalBpm_;
+        masterVolume = seqUI->globalVolume_;
+        isPlaying = seqUI->globalPlaying_;
+        seqUI->setBaseBpm(bpm);
+    }
 }
 
 // ========== draw ==========
 void ofApp::draw() {
-    ofBackground(20);
+    ofBackground(26, 26, 26); // #1a1a1a
 
-    ofColor amber(200, 164, 74);
-    ofColor blue(74, 140, 200);
-    ofColor pink(200, 74, 122);
-    ofColor green(74, 200, 122);
-    ofColor white(200, 200, 200);
-    ofColor gray(120, 120, 120);
+    float menuBarH = 28.0f;
+    float toolBarH = 40.0f;
+    float footerH  = 28.0f;
+    float winW = ofGetWidth();
 
-    float H  = 22;
-    float Y  = 10;
-    float kr = 16;
-    float ky = Y + H + 20;
+    float leftMarginW  = 468.0f;
+    float rightMarginW = 468.0f;
+    float squareW      = 984.0f;
+    float monitorH     = 492.0f;
+    float squareTop    = menuBarH + toolBarH;
 
-    auto& ov = oscVoices[selectedOscVoice_];
+    ofColor cyan(107, 228, 255);
 
-    // ========== OSC 1 ==========
-    string osc1Header = "OSC 1 [V" + ofToString(selectedOscVoice_ + 1) + "]";
-    drawHeader(SEC_OSC1, Y, W_OSC, osc1Header, amber);
+    // menu-bar
+    ofSetColor(26); ofFill(); ofDrawRectangle(0, 0, winW, menuBarH);
+    ofSetColor(cyan); ofSetLineWidth(1);
+    ofDrawLine(0, menuBarH, winW, menuBarH);
+    ofDrawBitmapString("Menu Bar", 10, 18);
 
-    float col1x = SEC_OSC1 + 24;
-    float col2x = SEC_OSC1 + 124;
-    float row1y = ky + 20;
-    float row2y = ky + 80;
-    float row3y = ky + 140;
-    float row4y = ky + 200;
+    // tool-bar
+    ofSetColor(26); ofFill(); ofDrawRectangle(0, menuBarH, winW, toolBarH);
+    ofSetColor(cyan); ofSetLineWidth(2);
+    ofDrawLine(0, menuBarH + toolBarH, winW, menuBarH + toolBarH);
+    ofDrawBitmapString("Toolbar", 10, menuBarH + 24);
 
-    drawKnobRight(col1x, row1y, kr, ov.mainWave.raw[0], 0, 100, "SAW", amber);
-    drawKnobRight(col2x, row1y, kr, ov.mainWave.raw[1], 0, 100, "SQR", amber);
-    drawKnobRight(col1x, row2y, kr, ov.mainWave.raw[2], 0, 100, "TRI", amber);
-    drawKnobRight(col2x, row2y, kr, ov.mainWave.raw[3], 0, 100, "SIN", amber);
-    drawKnobRight(col1x, row3y, kr, ov.tune,  -24,  24,  "TUNE",  amber);
-    drawKnobRight(col2x, row3y, kr, ov.fine,  -100, 100, "FINE",  amber);
-    drawKnobRight(col1x, row4y, kr, ov.level,  0,   1,   "LEVEL", amber);
-    ofSetColor(amber);
-    ofDrawBitmapString(ov.mainWave.getActiveLabel() + " 100%", col1x + kr + 8, row4y + 24);
+    // 左Margin(空、用途保留 - decisions/2026-06-14.md準拠) + 枠線
+    ofSetColor(26); ofFill(); ofDrawRectangle(0, squareTop, leftMarginW, squareW);
+    ofSetColor(cyan); ofNoFill(); ofSetLineWidth(1);
+    ofDrawRectangle(0, squareTop, leftMarginW, squareW);
+    ofFill();
 
-    float sub1y  = ky + 270;
-    float srow1y = sub1y + 20;
-    float srow2y = sub1y + 80;
-    float srow3y = sub1y + 140;
+    // 右Margin(空、コンテキストヘルプ用途保留) + 枠線
+    ofSetColor(26); ofFill();
+    ofDrawRectangle(leftMarginW + squareW, squareTop, rightMarginW, squareW);
+    ofSetColor(cyan); ofNoFill(); ofSetLineWidth(1);
+    ofDrawRectangle(leftMarginW + squareW, squareTop, rightMarginW, squareW);
+    ofFill();
+    ofSetColor(cyan); ofDrawBitmapString("Margin (Right)", leftMarginW + squareW + 10, squareTop + 20);
 
-    ofSetColor(50); ofSetLineWidth(1);
-    ofDrawLine(SEC_OSC1 + 10, sub1y - 14, SEC_OSC1 + W_OSC - 10, sub1y - 14);
-    ofSetColor(80);
-    ofDrawBitmapString("SUB 1", SEC_OSC1 + 10, sub1y - 2);
+    // 正方形メインエリア全体の左右枠線(main-monitor+step-buttons共通)
+    ofSetColor(cyan); ofSetLineWidth(2); ofNoFill();
+    ofDrawLine(leftMarginW, squareTop, leftMarginW, squareTop + squareW);
+    ofDrawLine(leftMarginW + squareW, squareTop, leftMarginW + squareW, squareTop + squareW);
+    ofFill();
 
-    drawKnobRight(col1x, srow1y, kr, ov.subWave.raw[0], 0, 100, "SAW",    amber);
-    drawKnobRight(col2x, srow1y, kr, ov.subWave.raw[1], 0, 100, "SQR",    amber);
-    drawKnobRight(col1x, srow2y, kr, ov.subWave.raw[2], 0, 100, "TRI",    amber);
-    drawKnobRight(col2x, srow2y, kr, ov.subWave.raw[3], 0, 100, "SIN",    amber);
-    drawKnobRight(col1x, srow3y, kr, ov.subDetune, -100, 100, "DETUNE", amber);
-    drawKnobRight(col2x, srow3y, kr, ov.subLevel,   0,   1,   "LEVEL",  amber);
-    ofSetColor(amber);
-    ofDrawBitmapString(ov.subWave.getActiveLabel() + " 100%", col2x + kr + 8, srow3y + 24);
+    // メインモニター/ステップボタンの区切り線
+    ofSetColor(cyan); ofSetLineWidth(2); ofNoFill();
+    ofDrawLine(leftMarginW, squareTop + monitorH, leftMarginW + squareW, squareTop + monitorH);
+    ofFill();
 
-    // ========== OSC 2 ==========
-    drawHeader(SEC_OSC2, Y, W_OSC, "OSC 2", amber);
+    // footer-bar
+    float footerY = squareTop + squareW;
+    ofSetColor(26); ofFill(); ofDrawRectangle(0, footerY, winW, footerH);
+    ofSetColor(cyan); ofSetLineWidth(2); ofNoFill();
+    ofDrawLine(0, footerY, winW, footerY);
+    ofFill();
+    ofSetColor(cyan); ofDrawBitmapString("Footer", 10, footerY + 18);
 
-    float col3x = SEC_OSC2 + 24;
-    float col4x = SEC_OSC2 + 124;
-
-    drawKnobRight(col3x, row1y, kr, ov.main2Wave.raw[0], 0, 100, "SAW", amber);
-    drawKnobRight(col4x, row1y, kr, ov.main2Wave.raw[1], 0, 100, "SQR", amber);
-    drawKnobRight(col3x, row2y, kr, ov.main2Wave.raw[2], 0, 100, "TRI", amber);
-    drawKnobRight(col4x, row2y, kr, ov.main2Wave.raw[3], 0, 100, "SIN", amber);
-    drawKnobRight(col3x, row3y, kr, ov.tune2,  -24,  24,  "TUNE",  amber);
-    drawKnobRight(col4x, row3y, kr, ov.fine2,  -100, 100, "FINE",  amber);
-    drawKnobRight(col3x, row4y, kr, ov.level2,  0,   1,   "LEVEL", amber);
-    ofSetColor(amber);
-    ofDrawBitmapString(ov.main2Wave.getActiveLabel() + " 100%", col3x + kr + 8, row4y + 24);
-
-    float sub2y   = ky + 270;
-    float srow1y2 = sub2y + 20;
-    float srow2y2 = sub2y + 80;
-    float srow3y2 = sub2y + 140;
-
-    ofSetColor(50);
-    ofDrawLine(SEC_OSC2 + 10, sub2y - 14, SEC_OSC2 + W_OSC - 10, sub2y - 14);
-    ofSetColor(80);
-    ofDrawBitmapString("SUB 2", SEC_OSC2 + 10, sub2y - 2);
-
-    drawKnobRight(col3x, srow1y2, kr, ov.sub2Wave.raw[0], 0, 100, "SAW",    amber);
-    drawKnobRight(col4x, srow1y2, kr, ov.sub2Wave.raw[1], 0, 100, "SQR",    amber);
-    drawKnobRight(col3x, srow2y2, kr, ov.sub2Wave.raw[2], 0, 100, "TRI",    amber);
-    drawKnobRight(col4x, srow2y2, kr, ov.sub2Wave.raw[3], 0, 100, "SIN",    amber);
-    drawKnobRight(col3x, srow3y2, kr, ov.sub2Detune, -100, 100, "DETUNE", amber);
-    drawKnobRight(col4x, srow3y2, kr, ov.sub2Level,   0,   1,   "LEVEL",  amber);
-    ofSetColor(amber);
-    ofDrawBitmapString(ov.sub2Wave.getActiveLabel() + " 100%", col4x + kr + 8, srow3y2 + 22);
-
-    // ========== FILTER ==========
-    drawHeader(SEC_FILTER, Y, W_FILTER, "FILTER", blue);
-
-    float fkx = SEC_FILTER + 24;
-    drawKnobRight(fkx, ky + 20,  kr, ov.filterCutoff,    20, 20000, "CUTOFF",  blue);
-    drawKnobRight(fkx, ky + 80,  kr, ov.filterResonance,  0, 1,     "RESO",    blue);
-    drawKnobRight(fkx, ky + 140, kr, ov.filterEnvAmt,    -1, 1,     "ENV AMT", blue);
-    drawKnobRight(fkx, ky + 200, kr, ov.filterKeyTrk,     0, 1,     "KEY TRK", blue);
-
-    float bx = SEC_FILTER + 10;
-    float by = ky + 270;
-    drawButton(bx,      by, 40, 20, "LP", ov.filterMode == 0, blue);
-    drawButton(bx + 48, by, 40, 20, "HP", ov.filterMode == 1, blue);
-    drawButton(bx + 96, by, 40, 20, "BP", ov.filterMode == 2, blue);
-
-    // ========== ENV ==========
-    drawHeader(SEC_ENV, Y, W_ENV, "ENV", pink);
-
-    float ekx = SEC_ENV + 24;
-    drawKnobRight(ekx, ky + 20,  kr, ov.envAttack,  0, 5,  "ATK", pink);
-    drawKnobRight(ekx, ky + 80,  kr, ov.envDecay,   0, 5,  "DCY", pink);
-    drawKnobRight(ekx, ky + 140, kr, ov.envSustain, 0, 1,  "SUS", pink);
-    drawKnobRight(ekx, ky + 200, kr, ov.envRelease, 0, 10, "REL", pink);
-
-    // ========== LFO ==========
-    drawHeader(SEC_LFO, Y, W_LFO, "LFO", green);
-
-    float lbx = SEC_LFO + 10;
-    float lby = ky + 10;
-    drawButton(lbx,      lby, 40, 20, "SIN", ov.lfoWave == 0, green);
-    drawButton(lbx + 48, lby, 40, 20, "TRI", ov.lfoWave == 1, green);
-    drawButton(lbx,      lby + 26, 40, 20, "SQR", ov.lfoWave == 2, green);
-
-    float lkx = SEC_LFO + 24;
-    drawKnobRight(lkx, ky + 80,  kr, ov.lfoRate,  0.1, 20, "RATE",  green);
-    drawKnobRight(lkx, ky + 140, kr, ov.lfoDepth, 0,   1,  "DEPTH", green);
-
-    float ltx = SEC_LFO + 10;
-    float lty = ky + 220;
-    drawButton(ltx,       lty, 50, 20, "PITCH", ov.lfoTarget == 0, green);
-    drawButton(ltx + 58,  lty, 50, 20, "FILT",  ov.lfoTarget == 1, green);
-    drawButton(ltx + 116, lty, 50, 20, "AMP",   ov.lfoTarget == 2, green);
-
-    // ========== REVERB ==========
-    drawHeader(SEC_REVERB, Y, W_REVERB, "REV", white);
-
-    float rkx = SEC_REVERB + 24;
-    drawKnobRight(rkx, ky + 20,  kr, ov.reverbRoomSize, 0, 1, "ROOM", white);
-    drawKnobRight(rkx, ky + 80,  kr, ov.reverbDamp,     0, 1, "DAMP", white);
-    drawKnobRight(rkx, ky + 140, kr, ov.reverbWet,      0, 1, "WET",  white);
-
-    // ========== MASTER ==========
-    drawHeader(SEC_MASTER, Y, W_MASTER, "MST", gray);
-
-    float mkx = SEC_MASTER + 24;
-    drawKnobRight(mkx, ky + 20, kr, masterVolume, 0,  1,   "VOL", gray);
-    drawKnobRight(mkx, ky + 80, kr, bpm,          40, 200, "BPM", gray);
-
-    ofSetColor(isPlaying ? ofColor(74, 200, 122) : ofColor(120));
-    ofDrawBitmapString(isPlaying ? "PLAY" : "STOP", mkx - 8, ky + 160);
-
-    // 区切り線
-    ofSetColor(50); ofSetLineWidth(1);
-    ofDrawLine(SEC_OSC2,   Y, SEC_OSC2,   460);
-    ofDrawLine(SEC_FILTER, Y, SEC_FILTER, 460);
-    ofDrawLine(SEC_ENV,    Y, SEC_ENV,    460);
-    ofDrawLine(SEC_LFO,    Y, SEC_LFO,    460);
-    ofDrawLine(SEC_REVERB, Y, SEC_REVERB, 460);
-    ofDrawLine(SEC_MASTER, Y, SEC_MASTER, 460);
-
-    // ========== SEQUENCER ==========
-    if(seqUI) seqUI->draw(470);
+    // ========== SEQUENCER(メインモニター+ステップグリッド) ==========
+    if(seqUI) seqUI->draw(leftMarginW, squareTop);
 }
 
-// ========== buildKnobTable ==========
+// ========== buildKnobTable(旧OSCパネル用、保持のみ・未描画) ==========
 void ofApp::buildKnobTable() {
     float H     = 22;
     float Y     = 10;
@@ -381,105 +292,21 @@ void ofApp::buildKnobTable() {
 
 // ========== mousePressed ==========
 void ofApp::mousePressed(int x, int y, int button) {
-    // シーケンサーエリア（y>=470）はseqUIに渡す
-    if(y >= 470) {
+    float leftMarginW = 468.0f, squareW = 984.0f, squareTop = 68.0f;
+    if(x >= leftMarginW && x <= leftMarginW + squareW &&
+       y >= squareTop   && y <= squareTop + squareW) {
         if(seqUI) {
             seqUI->mousePressed(x, y, button);
             if(seqUI->selectedOscVoice_ != selectedOscVoice_) {
                 selectedOscVoice_ = seqUI->selectedOscVoice_;
-                buildKnobTable();
             }
         }
-        return;
-    }
-
-    // OSCパネルエリア（y<470）
-    for(int i = 0; i < 41; i++) {
-        float dx = x - knobs[i].cx;
-        float dy = y - knobs[i].cy;
-        if(sqrt(dx * dx + dy * dy) <= knobs[i].r + 4) {
-            dragTarget   = i;
-            dragStartY   = y;
-            dragStartVal = knobs[i].target ? *knobs[i].target : 0;
-            return;
-        }
-    }
-
-    auto& ov = oscVoices[selectedOscVoice_];
-    float H  = 22;
-    float Y  = 10;
-    float ky = Y + H + 20;
-
-    float bx = SEC_FILTER + 10;
-    float by = ky + 270;
-    if(x >= bx      && x <= bx + 40  && y >= by && y <= by + 20) { ov.filterMode = 0; return; }
-    if(x >= bx + 48 && x <= bx + 88  && y >= by && y <= by + 20) { ov.filterMode = 1; return; }
-    if(x >= bx + 96 && x <= bx + 136 && y >= by && y <= by + 20) { ov.filterMode = 2; return; }
-
-    float lbx = SEC_LFO + 10;
-    float lby = ky + 10;
-    if(x >= lbx      && x <= lbx + 40  && y >= lby      && y <= lby + 20)      { ov.lfoWave = 0; return; }
-    if(x >= lbx + 48 && x <= lbx + 88  && y >= lby      && y <= lby + 20)      { ov.lfoWave = 1; return; }
-    if(x >= lbx      && x <= lbx + 40  && y >= lby + 26 && y <= lby + 46)      { ov.lfoWave = 2; return; }
-
-    float ltx = SEC_LFO + 10;
-    float lty = ky + 220;
-    if(x >= ltx       && x <= ltx + 50  && y >= lty && y <= lty + 20) { ov.lfoTarget = 0; return; }
-    if(x >= ltx + 58  && x <= ltx + 108 && y >= lty && y <= lty + 20) { ov.lfoTarget = 1; return; }
-    if(x >= ltx + 116 && x <= ltx + 166 && y >= lty && y <= lty + 20) { ov.lfoTarget = 2; return; }
-
-    float mkx = SEC_MASTER + 42;
-    if(x >= mkx - 16 && x <= mkx + 32 && y >= ky + 150 && y <= ky + 165) {
-        isPlaying = !isPlaying;
-        return;
     }
 }
 
 // ========== mouseDragged ==========
 void ofApp::mouseDragged(int x, int y, int button) {
-    if(y >= 470 && dragTarget < 0) {
-        if(seqUI) seqUI->mouseDragged(x, y, button);
-        return;
-    }
-    if(dragTarget < 0) return;
-
-    auto& ov = oscVoices[selectedOscVoice_];
-    float dy    = dragStartY - y;
-    float range = knobs[dragTarget].maxVal - knobs[dragTarget].minVal;
-    float delta = dy / 200.0f * range;
-
-    auto setWaveMix = [&](OscWaveMix& mix, int idx) {
-        int newVal = (int)round((dragStartVal + delta) / 10.0f) * 10;
-        newVal = ofClamp(newVal, 0, 100);
-        mix.set(idx, newVal);
-    };
-
-    switch(dragTarget) {
-        case 0:  setWaveMix(ov.mainWave, 0); break;
-        case 1:  setWaveMix(ov.mainWave, 1); break;
-        case 2:  setWaveMix(ov.mainWave, 2); break;
-        case 3:  setWaveMix(ov.mainWave, 3); break;
-        case 7:  ov.subUseMain = false; setWaveMix(ov.subWave, 0); break;
-        case 8:  ov.subUseMain = false; setWaveMix(ov.subWave, 1); break;
-        case 9:  ov.subUseMain = false; setWaveMix(ov.subWave, 2); break;
-        case 10: ov.subUseMain = false; setWaveMix(ov.subWave, 3); break;
-        case 13: setWaveMix(ov.main2Wave, 0); break;
-        case 14: setWaveMix(ov.main2Wave, 1); break;
-        case 15: setWaveMix(ov.main2Wave, 2); break;
-        case 16: setWaveMix(ov.main2Wave, 3); break;
-        case 20: ov.sub2UseMain = false; setWaveMix(ov.sub2Wave, 0); break;
-        case 21: ov.sub2UseMain = false; setWaveMix(ov.sub2Wave, 1); break;
-        case 22: ov.sub2UseMain = false; setWaveMix(ov.sub2Wave, 2); break;
-        case 23: ov.sub2UseMain = false; setWaveMix(ov.sub2Wave, 3); break;
-        default:
-            if(knobs[dragTarget].target) {
-                float newVal = ofClamp(dragStartVal + delta,
-                                       knobs[dragTarget].minVal,
-                                       knobs[dragTarget].maxVal);
-                *knobs[dragTarget].target = newVal;
-            }
-            break;
-    }
+    if(seqUI) seqUI->mouseDragged(x, y, button);
 }
 
 // ========== mouseReleased ==========
