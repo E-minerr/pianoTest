@@ -29,6 +29,7 @@ struct StepUIData {
     bool lockGlide      = false;
     bool lockOctShift   = false;
     bool lockNote       = false;
+    bool lockStrum      = false;
     bool chordPanelOpen = false;
     std::string chordName = "";
     int  octDelta    = 0;
@@ -155,6 +156,8 @@ private:
     bool showVelocity_ = false;
     int  panelStep_    = -1;
     bool panelOnRight_ = true;
+    bool panelShowPiano_ = true;
+    bool panelShowParameter_ = true;
     int  chordScrollOffset_ = 0;
     int  pianoOctave_  = 4;
 
@@ -201,6 +204,7 @@ private:
     void drawVoiceBadges(float startY);
     void drawIconChan(float cx, float cy, float r, ofColor fillCol);
     void drawMainMonitorChrome();
+    void drawPanelTabButton(float x, float y, const char* label, bool active);
     void drawGlobalTransport();
     void drawText(const string& s, float x, float y) const;
     void drawText14(const string& s, float x, float y) const;
