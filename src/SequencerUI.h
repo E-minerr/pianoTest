@@ -56,6 +56,7 @@ struct VoiceRange {
     int startStep = -1;
     int endStep   = -1;
     int oscIndex  = 0;
+    int soundPage = 0;
     bool active   = false;
     VoiceCommonParam common;
     bool panelOpen = false;
@@ -66,6 +67,45 @@ struct VoiceRange {
     bool scaleOpen  = false;
     float panelOffsetX = 0.0f;
     float panelOffsetY = 0.0f;
+};
+
+struct SoundSetUIData {
+    int mainWave[4] = {100, 0, 0, 0};
+    float tune = 0.0f;
+    float fine = 0.0f;
+    float level = 0.5f;
+
+    float subDetune = 0.0f;
+    float subDelay = 0.0f;
+    float subLevel = 0.0f;
+
+    int main2Wave[4] = {100, 0, 0, 0};
+    float tune2 = 0.0f;
+    float fine2 = 0.0f;
+    float level2 = 0.0f;
+
+    float sub2Detune = 0.0f;
+    float sub2Delay = 0.0f;
+    float sub2Level = 0.0f;
+
+    float filterCutoff = 1000.0f;
+    float filterResonance = 0.5f;
+    float filterEnvAmt = 0.0f;
+    float filterKeyTrk = 0.0f;
+
+    float envAttack = 0.01f;
+    float envDecay = 0.1f;
+    float envSustain = 0.8f;
+    float envRelease = 0.3f;
+
+    float lfoRate = 1.0f;
+    float lfoDepth = 0.0f;
+    float lfoWave = 0.0f;
+    float lfoTarget = 0.0f;
+
+    float reverbRoom = 0.5f;
+    float reverbDamp = 0.5f;
+    float reverbWet = 0.0f;
 };
 
 class SequencerUI {
@@ -88,7 +128,7 @@ public:
     bool resetMasterClock_ = false;
     int  selectedOscVoice_  = 0;
     float globalBpm_     = 60.0f;
-    float globalVolume_  = 1.0f;
+    float globalVolume_  = 0.5f;
     bool  globalPlaying_ = true;
     ofTrueTypeFont* jbFont_   = nullptr;
     ofTrueTypeFont* jbFont14_ = nullptr;
@@ -97,6 +137,7 @@ public:
 
     int  getVoiceCount() const { return voiceCount_; }
     const VoiceRange& getVoice(int v) const { return voices_[v]; }
+    const SoundSetUIData& getSoundSet(int idx) const { return soundSets_[idx]; }
 
     static constexpr int COLS        = 16;
     static constexpr int ROWS        = 6;
@@ -116,6 +157,7 @@ private:
 
     StepUIData stepData_[TOTAL_STEPS];
     VoiceRange voices_[MAX_VOICES];
+    SoundSetUIData soundSets_[MAX_VOICES];
     std::atomic<int> voiceCount_ = 0;
     float      baseBpm_    = 60.0f;
 
@@ -155,6 +197,7 @@ private:
 
     bool showVelocity_ = false;
     int  panelStep_    = -1;
+    int  panelVoice_   = -1;
     bool panelOnRight_ = true;
     bool panelShowPiano_ = true;
     bool panelShowParameter_ = true;
@@ -193,12 +236,17 @@ private:
     // ===== グローバルトランスポート(BPM/VOLドラッグ用) =====
     bool draggingGlobalBpm_    = false;
     bool draggingGlobalVolume_ = false;
+    int  soundDragSet_ = -1;
+    int  soundDragParam_ = -1;
+    float soundDragStartY_ = 0.0f;
+    float soundDragStartVal_ = 0.0f;
 
     void drawGrid(float startY);
     void drawStep(int idx, float x, float y);
     void drawVelocityBar(int idx, float x, float y);
     void drawPanel(int stepIdx);
     void drawVoicePanel(int voiceIdx);
+    void drawVoiceMainPanel(int voiceIdx);
     void drawMiniPiano(float x, float y, float w, float h, int stepIdx, bool isVoicePanel, int voiceIdx);
     void drawVoiceRanges(float startY);
     void drawVoiceBadges(float startY);
@@ -216,6 +264,7 @@ private:
     void getStepRect(int idx, float startY, float& ox, float& oy) const;
     int  stepAtPos(int mx, int my, float startY) const;
     int  voiceBadgeAtPos(int mx, int my, float startY) const;
+    int  voiceTagAtPos(int mx, int my, float startY) const;
     int  voiceEdgeAtPos(int mx, int my, float startY, bool& isLeftEdge) const;
     void getPanelArea(float& dx, float& contentY, float& halfW, float& halfH) const;
     void cycleStepMode(int idx);
@@ -225,7 +274,13 @@ private:
     void addVoiceRange(int startStep, int endStep);
     bool rangeOverlaps(int startStep, int endStep) const;
     bool rangeOverlapsExcept(int startStep, int endStep, int excludeVoice) const;
+    bool isSoundSetInUse(int setIdx, int exceptVoice) const;
+    int  findAvailableSoundSet(int preferredSet, int exceptVoice) const;
+    int  stepAvailableSoundSet(int currentSet, int delta, int exceptVoice) const;
     bool isScaleNote(int midi) const;
+    float getSoundParamValue(int setIdx, int paramIdx) const;
+    void  setSoundParamValue(int setIdx, int paramIdx, float value);
+    bool  soundParamAtPos(int x, int y, int voiceIdx, int& setIdx, int& paramIdx) const;
 
     void getVoicePanelRect(int voiceIdx, float& px, float& py, float& pw, float& ph) const;
     void getGroupRowRect(int voiceIdx, float& rx, float& ry) const;
@@ -235,4 +290,5 @@ private:
                            float multX[5], float multW[5],
                            float& delX, float& delW) const;
     void applyVoiceCommonToSteps(int voiceIdx);
+    void applyVoiceScaleToSteps(int voiceIdx);
 };

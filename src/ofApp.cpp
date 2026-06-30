@@ -17,7 +17,7 @@
 #define W_REVERB 90
 #define W_MASTER 84
 
-// ========== ヘルパー関数 ==========
+// ========== ヘルパ�E関数 ==========
 double ofApp::midiToFreq(int note) {
     return 440.0 * pow(2.0, (note - 69) / 12.0);
 }
@@ -27,7 +27,7 @@ double ofApp::centToRatio(float cent) {
 }
 
 double ofApp::playOsc(maxiOsc& saw, maxiOsc& sqr, maxiOsc& tri, maxiOsc& sin,
-                      OscWaveMix& mix, double freq) {
+                      const OscWaveMix& mix, double freq) {
     double out = 0.0;
     if(mix.normalized[0] > 0.0) out += saw.saw(freq)      * (mix.normalized[0] / 100.0);
     if(mix.normalized[1] > 0.0) out += sqr.square(freq)   * (mix.normalized[1] / 100.0);
@@ -36,7 +36,7 @@ double ofApp::playOsc(maxiOsc& saw, maxiOsc& sqr, maxiOsc& tri, maxiOsc& sin,
     return out;
 }
 
-// ========== UI描画ヘルパー(旧OSCパネル用、保持のみ) ==========
+// ========== UI描画ヘルパ�E(旧OSCパネル用、保持のみ) ==========
 void drawKnob(float cx, float cy, float r, float val, ofColor col) {
     ofSetColor(40);
     ofDrawCircle(cx, cy, r);
@@ -122,7 +122,9 @@ void ofApp::setup() {
         }
     }
 
-    initReverb();
+    for(int v = 0; v < MAX_VOICES; v++) {
+        audioVoices[v].initReverb();
+    }
 
     seqUI = new SequencerUI(seqs, MAX_VOICES, noteResolver, harmony);
     seqUI->setBaseBpm(bpm);
@@ -144,6 +146,45 @@ void ofApp::update() {
         masterVolume = seqUI->globalVolume_;
         isPlaying = seqUI->globalPlaying_;
         seqUI->setBaseBpm(bpm);
+        for(int i = 0; i < MAX_VOICES; i++) {
+            const SoundSetUIData& ss = seqUI->getSoundSet(i);
+            OscVoice& ov = oscVoices[i];
+            for(int w = 0; w < 4; w++) {
+                ov.mainWave.raw[w] = ss.mainWave[w];
+                ov.main2Wave.raw[w] = ss.main2Wave[w];
+            }
+            ov.mainWave.normalize();
+            ov.main2Wave.normalize();
+            ov.tune = ss.tune;
+            ov.fine = ss.fine;
+            ov.level = ss.level;
+            ov.subDetune = ss.subDetune;
+            ov.subDelay = ss.subDelay;
+            ov.subLevel = ss.subLevel;
+            ov.subUseMain = true;
+            ov.tune2 = ss.tune2;
+            ov.fine2 = ss.fine2;
+            ov.level2 = ss.level2;
+            ov.sub2Detune = ss.sub2Detune;
+            ov.sub2Delay = ss.sub2Delay;
+            ov.sub2Level = ss.sub2Level;
+            ov.sub2UseMain = true;
+            ov.filterCutoff = ss.filterCutoff;
+            ov.filterResonance = ss.filterResonance;
+            ov.filterEnvAmt = ss.filterEnvAmt;
+            ov.filterKeyTrk = ss.filterKeyTrk;
+            ov.envAttack = ss.envAttack;
+            ov.envDecay = ss.envDecay;
+            ov.envSustain = ss.envSustain;
+            ov.envRelease = ss.envRelease;
+            ov.lfoRate = ss.lfoRate;
+            ov.lfoDepth = ss.lfoDepth;
+            ov.lfoWave = (int)round(ss.lfoWave);
+            ov.lfoTarget = (int)round(ss.lfoTarget);
+            ov.reverbRoomSize = ss.reverbRoom;
+            ov.reverbDamp = ss.reverbDamp;
+            ov.reverbWet = ss.reverbWet;
+        }
     }
 }
 
@@ -176,13 +217,13 @@ void ofApp::draw() {
     ofDrawLine(0, menuBarH + toolBarH, winW, menuBarH + toolBarH);
     ofDrawBitmapString("Toolbar", 10, menuBarH + 24);
 
-    // 左Margin(空、用途保留 - decisions/2026-06-14.md準拠) + 枠線
+    // 左Margin(空、用途保留 - decisions/2026-06-14.md準拠) + 枠緁E
     ofSetColor(26); ofFill(); ofDrawRectangle(0, squareTop, leftMarginW, squareW);
     ofSetColor(cyan); ofNoFill(); ofSetLineWidth(1);
     ofDrawRectangle(0, squareTop, leftMarginW, squareW);
     ofFill();
 
-    // 右Margin(空、コンテキストヘルプ用途保留) + 枠線
+    // 右Margin(空、コンチE��スト�Eルプ用途保留) + 枠緁E
     ofSetColor(26); ofFill();
     ofDrawRectangle(leftMarginW + squareW, squareTop, rightMarginW, squareW);
     ofSetColor(cyan); ofNoFill(); ofSetLineWidth(1);
@@ -190,13 +231,13 @@ void ofApp::draw() {
     ofFill();
     ofSetColor(cyan); ofDrawBitmapString("Margin (Right)", leftMarginW + squareW + 10, squareTop + 20);
 
-    // 正方形メインエリア全体の左右枠線(main-monitor+step-buttons共通)
+    // 正方形メインエリア全体�E左右枠緁Emain-monitor+step-buttons共送E
     ofSetColor(cyan); ofSetLineWidth(2); ofNoFill();
     ofDrawLine(leftMarginW, squareTop, leftMarginW, squareTop + squareW);
     ofDrawLine(leftMarginW + squareW, squareTop, leftMarginW + squareW, squareTop + squareW);
     ofFill();
 
-    // メインモニター/ステップボタンの区切り線
+    // メインモニター/スチE��プ�Eタンの区刁E��緁E
     ofSetColor(cyan); ofSetLineWidth(2); ofNoFill();
     ofDrawLine(leftMarginW, squareTop + monitorH, leftMarginW + squareW, squareTop + monitorH);
     ofFill();
@@ -209,7 +250,7 @@ void ofApp::draw() {
     ofFill();
     ofSetColor(cyan); ofDrawBitmapString("Footer", 10, footerY + 18);
 
-    // ========== SEQUENCER(メインモニター+ステップグリッド) ==========
+    // ========== SEQUENCER(メインモニター+スチE��プグリチE��) ==========
     if(seqUI) seqUI->draw(leftMarginW, squareTop);
 }
 
@@ -337,14 +378,16 @@ void ofApp::audioOut(ofSoundBuffer& buffer) {
     for(size_t i = 0; i < buffer.getNumFrames(); i++) {
 
         masterClock_++;
-        double outMix = 0.0;
+        double outMixL = 0.0;
+        double outMixR = 0.0;
         int activeVoices = 0;
 
         for(int v = 0; v < voiceCount; v++) {
             const VoiceRange& vr = seqUI->getVoice(v);
             if(!vr.active || !vr.playing) continue;
 
-            auto& ov = oscVoices[vr.oscIndex];
+            const auto& ov = oscVoices[vr.oscIndex];
+            auto& av = audioVoices[v];
             float bpmMult = vr.common.bpmMult;
             double baseStepSamples = SR * 60.0 / (double)bpm / 4.0;
 
@@ -435,12 +478,15 @@ void ofApp::audioOut(ofSoundBuffer& buffer) {
             smoothedAmp[v] = SMOOTH_COEFF * smoothedAmp[v] + (1.0 - SMOOTH_COEFF) * envAmplitude[v];
 
             double lfoVal = 0.0;
-            if(ov.lfoWave == 0)      lfoVal = ov.lfo.sinewave(ov.lfoRate) * ov.lfoDepth;
-            else if(ov.lfoWave == 1) lfoVal = ov.lfo.triangle(ov.lfoRate) * ov.lfoDepth;
-            else                     lfoVal = ov.lfo.square(ov.lfoRate)   * ov.lfoDepth;
+            if(ov.lfoWave == 0)      lfoVal = av.lfo.sinewave(ov.lfoRate) * ov.lfoDepth;
+            else if(ov.lfoWave == 1) lfoVal = av.lfo.triangle(ov.lfoRate) * ov.lfoDepth;
+            else                     lfoVal = av.lfo.square(ov.lfoRate)   * ov.lfoDepth;
 
             double voiceOut = 0.0;
             int polyCount = 0;
+            double voiceElapsedSamples = gateLength[v] - gateTimer[v];
+            bool sub1Ready = voiceElapsedSamples >= ov.subDelay * SR * 0.25;
+            bool sub2Ready = voiceElapsedSamples >= ov.sub2Delay * SR * 0.25;
 
             for(int p = 0; p < 7; p++) {
                 if(polyFreqs[v][p] < 0.0) break;
@@ -454,22 +500,26 @@ void ofApp::audioOut(ofSoundBuffer& buffer) {
                 double freq = polyFreqs[v][p] * pow(2.0, ov.tune / 12.0) * centToRatio(ov.fine);
                 if(ov.lfoTarget == 0) freq += lfoVal * 100.0;
 
-                double pOut = playOsc(ov.poly_saw[p], ov.poly_sqr[p], ov.poly_tri[p], ov.poly_sin[p],
+                double pOut = playOsc(av.poly_saw[p], av.poly_sqr[p], av.poly_tri[p], av.poly_sin[p],
                                       ov.mainWave, freq) * ov.level;
 
-                OscWaveMix& subMix = ov.subUseMain ? ov.mainWave : ov.subWave;
-                double freqSub = freq * centToRatio(ov.subDetune);
-                pOut += playOsc(ov.sub_saw, ov.sub_sqr, ov.sub_tri, ov.sub_sin,
-                                subMix, freqSub) * ov.subLevel;
+                const OscWaveMix& subMix = ov.subUseMain ? ov.mainWave : ov.subWave;
+                if(sub1Ready) {
+                    double freqSub = freq * centToRatio(ov.subDetune);
+                    pOut += playOsc(av.sub_saw, av.sub_sqr, av.sub_tri, av.sub_sin,
+                                    subMix, freqSub) * ov.subLevel;
+                }
 
                 double freq2 = polyFreqs[v][p] * pow(2.0, ov.tune2 / 12.0) * centToRatio(ov.fine2);
-                pOut += playOsc(ov.poly2_saw[p], ov.poly2_sqr[p], ov.poly2_tri[p], ov.poly2_sin[p],
+                pOut += playOsc(av.poly2_saw[p], av.poly2_sqr[p], av.poly2_tri[p], av.poly2_sin[p],
                                 ov.main2Wave, freq2) * ov.level2;
 
-                OscWaveMix& sub2Mix = ov.sub2UseMain ? ov.main2Wave : ov.sub2Wave;
-                double freq2Sub = freq2 * centToRatio(ov.sub2Detune);
-                pOut += playOsc(ov.sub2_saw, ov.sub2_sqr, ov.sub2_tri, ov.sub2_sin,
-                                sub2Mix, freq2Sub) * ov.sub2Level;
+                const OscWaveMix& sub2Mix = ov.sub2UseMain ? ov.main2Wave : ov.sub2Wave;
+                if(sub2Ready) {
+                    double freq2Sub = freq2 * centToRatio(ov.sub2Detune);
+                    pOut += playOsc(av.sub2_saw, av.sub2_sqr, av.sub2_tri, av.sub2_sin,
+                                    sub2Mix, freq2Sub) * ov.sub2Level;
+                }
 
                 voiceOut += pOut;
                 polyCount++;
@@ -483,29 +533,40 @@ void ofApp::audioOut(ofSoundBuffer& buffer) {
             cutoff += ov.filterEnvAmt * envAmplitude[v] * 5000.0;
             if(ov.lfoTarget == 1) cutoff += lfoVal * 5000.0;
             cutoff = ofClamp(cutoff, 20.0, 20000.0);
-            ov.filter.setCutoff(cutoff);
-            ov.filter.setResonance(ov.filterResonance);
+            av.filter.setCutoff(cutoff);
+            av.filter.setResonance(ov.filterResonance);
             float lp = (ov.filterMode == 0) ? 1.0f : 0.0f;
             float hp = (ov.filterMode == 1) ? 1.0f : 0.0f;
             float bp = (ov.filterMode == 2) ? 1.0f : 0.0f;
-            voiceOut = ov.filter.play(voiceOut, lp, bp, hp, 0.0f);
+            voiceOut = av.filter.play(voiceOut, lp, bp, hp, 0.0f);
 
             if(ov.lfoTarget == 2) voiceOut *= (1.0 + lfoVal);
 
+            double wetL = 0.0;
+            double wetR = 0.0;
+            av.processReverb(voiceOut, ov.reverbRoomSize, ov.reverbDamp, wetL, wetR);
+            double voiceL = voiceOut;
+            double voiceR = voiceOut;
             if(ov.reverbWet > 0.0f) {
-                double wet = processReverb(voiceOut);
-                voiceOut = voiceOut * (1.0 - ov.reverbWet) + wet * ov.reverbWet;
+                voiceL = voiceOut * (1.0 - ov.reverbWet) + wetL * ov.reverbWet;
+                voiceR = voiceOut * (1.0 - ov.reverbWet) + wetR * ov.reverbWet;
             }
 
-            outMix += voiceOut;
+            outMixL += voiceL;
+            outMixR += voiceR;
             activeVoices++;
         }
 
-        if(activeVoices > 0) outMix /= sqrt((double)activeVoices);
-        outMix *= masterVolume;
+        if(activeVoices > 0) {
+            double norm = sqrt((double)activeVoices);
+            outMixL /= norm;
+            outMixR /= norm;
+        }
+        outMixL *= masterVolume;
+        outMixR *= masterVolume;
 
-        buffer[i * 2]     = outMix;
-        buffer[i * 2 + 1] = outMix;
+        buffer[i * 2]     = outMixL;
+        buffer[i * 2 + 1] = outMixR;
     }
 }
 

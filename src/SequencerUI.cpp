@@ -101,13 +101,39 @@ bool SequencerUI::rangeOverlapsExcept(int s, int e, int excludeVoice) const {
     return false;
 }
 
+bool SequencerUI::isSoundSetInUse(int setIdx, int exceptVoice) const {
+    for(int v = 0; v < voiceCount_; v++) {
+        if(v == exceptVoice || !voices_[v].active) continue;
+        if(voices_[v].oscIndex == setIdx) return true;
+    }
+    return false;
+}
+
+int SequencerUI::findAvailableSoundSet(int preferredSet, int exceptVoice) const {
+    preferredSet = ofClamp(preferredSet, 0, MAX_VOICES - 1);
+    if(!isSoundSetInUse(preferredSet, exceptVoice)) return preferredSet;
+    for(int i = 0; i < MAX_VOICES; i++) {
+        if(!isSoundSetInUse(i, exceptVoice)) return i;
+    }
+    return preferredSet;
+}
+
+int SequencerUI::stepAvailableSoundSet(int currentSet, int delta, int exceptVoice) const {
+    int dir = delta >= 0 ? 1 : -1;
+    for(int n = 1; n <= MAX_VOICES; n++) {
+        int next = (currentSet + dir * n + MAX_VOICES * 2) % MAX_VOICES;
+        if(!isSoundSetInUse(next, exceptVoice)) return next;
+    }
+    return currentSet;
+}
+
 void SequencerUI::addVoiceRange(int startStep, int endStep) {
     if(voiceCount_ >= MAX_VOICES) return;
     if(rangeOverlaps(startStep, endStep)) return;
     int v = voiceCount_;
     voices_[v].startStep = startStep;
     voices_[v].endStep   = endStep;
-    voices_[v].oscIndex  = v % 6;
+    voices_[v].oscIndex  = findAvailableSoundSet(v % MAX_VOICES, v);
     voices_[v].active    = true;
     voices_[v].panelOpen = false;
     voices_[v].resizing  = false;
@@ -159,6 +185,28 @@ void SequencerUI::applyVoiceCommonToSteps(int voiceIdx) {
     }
 }
 
+void SequencerUI::applyVoiceScaleToSteps(int voiceIdx) {
+    if(voiceIdx < 0 || voiceIdx >= voiceCount_) return;
+    VoiceCommonParam& cp = voices_[voiceIdx].common;
+    auto notes = harmony_.getAvailableNotes(cp.scaleName, cp.scaleRoot);
+    std::vector<int> octaveNotes;
+    int startMidi = cp.pianoOctave * 12;
+    for(int n : notes) {
+        if(n >= startMidi) octaveNotes.push_back(n);
+    }
+    if(octaveNotes.empty()) return;
+    int ni = 0;
+    for(int st = voices_[voiceIdx].startStep; st <= voices_[voiceIdx].endStep; st++) {
+        if(st < 0 || st >= TOTAL_STEPS) continue;
+        StepUIData& d = stepData_[st];
+        d.noteOverride = octaveNotes[ni++] % 128;
+        d.chordName = "";
+        d.chordNoteCount = 0;
+        for(int p = 0; p < 7; p++) d.chordNotes[p] = -1;
+        if(ni >= (int)octaveNotes.size()) ni = 0;
+    }
+}
+
 bool SequencerUI::isScaleNote(int midi) const {
     return isScaleNote(midi, -1);
 }
@@ -175,15 +223,246 @@ bool SequencerUI::isScaleNote(int midi, int voiceIdx) const {
     return false;
 }
 
+static void setWaveRawWithRemainingLimit(int raw[4], int idx, int value) {
+    int otherTotal = 0;
+    for(int i = 0; i < 4; i++) {
+        if(i != idx) otherTotal += raw[i];
+    }
+    raw[idx] = ofClamp(value, 0, max(0, 100 - otherTotal));
+}
+
+static float soundParamDragStep(int paramIdx) {
+    if((paramIdx >= 0 && paramIdx <= 3) || (paramIdx >= 10 && paramIdx <= 13)) return 1.0f;
+    switch(paramIdx) {
+        case 4: case 14: return 0.25f;
+        case 5: case 7: case 15: case 17: return 1.0f;
+        case 20: return 80.0f;
+        case 22: return 0.01f;
+        case 24: case 25: return 0.01f;
+        case 27: return 0.02f;
+        case 28: return 0.1f;
+        case 30: case 31: return 0.05f;
+        default: return 0.01f;
+    }
+}
+
+static float soundParamWheelStep(int paramIdx) {
+    if((paramIdx >= 0 && paramIdx <= 3) || (paramIdx >= 10 && paramIdx <= 13)) return 1.0f;
+    switch(paramIdx) {
+        case 4: case 14: return 1.0f;
+        case 5: case 7: case 15: case 17: return 1.0f;
+        case 6: case 8: case 9:
+        case 16: case 18: case 19:
+        case 21: case 23:
+        case 26: case 29:
+        case 32: case 33: case 34: return 0.01f;
+        case 20: return 100.0f;
+        case 22: return 0.01f;
+        case 24: case 25: case 27: return 0.01f;
+        case 28: return 0.1f;
+        case 30: case 31: return 1.0f;
+        default: return 0.01f;
+    }
+}
+
+float SequencerUI::getSoundParamValue(int setIdx, int paramIdx) const {
+    if(setIdx < 0 || setIdx >= MAX_VOICES) return 0.0f;
+    const SoundSetUIData& s = soundSets_[setIdx];
+    if(paramIdx >= 0 && paramIdx <= 3) return (float)s.mainWave[paramIdx];
+    if(paramIdx >= 10 && paramIdx <= 13) return (float)s.main2Wave[paramIdx - 10];
+    switch(paramIdx) {
+        case 4: return s.tune;
+        case 5: return s.fine;
+        case 6: return s.level;
+        case 7: return s.subDetune;
+        case 8: return s.subLevel;
+        case 9: return s.subDelay;
+        case 14: return s.tune2;
+        case 15: return s.fine2;
+        case 16: return s.level2;
+        case 17: return s.sub2Detune;
+        case 18: return s.sub2Level;
+        case 19: return s.sub2Delay;
+        case 20: return s.filterCutoff;
+        case 21: return s.filterResonance;
+        case 22: return s.filterEnvAmt;
+        case 23: return s.filterKeyTrk;
+        case 24: return s.envAttack;
+        case 25: return s.envDecay;
+        case 26: return s.envSustain;
+        case 27: return s.envRelease;
+        case 28: return s.lfoRate;
+        case 29: return s.lfoDepth;
+        case 30: return s.lfoWave;
+        case 31: return s.lfoTarget;
+        case 32: return s.reverbRoom;
+        case 33: return s.reverbDamp;
+        case 34: return s.reverbWet;
+        default: return 0.0f;
+    }
+}
+
+void SequencerUI::setSoundParamValue(int setIdx, int paramIdx, float value) {
+    if(setIdx < 0 || setIdx >= MAX_VOICES) return;
+    SoundSetUIData& s = soundSets_[setIdx];
+    if(paramIdx >= 0 && paramIdx <= 3) {
+        setWaveRawWithRemainingLimit(s.mainWave, paramIdx, (int)round(value));
+        return;
+    }
+    if(paramIdx >= 10 && paramIdx <= 13) {
+        setWaveRawWithRemainingLimit(s.main2Wave, paramIdx - 10, (int)round(value));
+        return;
+    }
+    switch(paramIdx) {
+        case 4: s.tune = ofClamp(value, -24.0f, 24.0f); break;
+        case 5: s.fine = ofClamp(value, -100.0f, 100.0f); break;
+        case 6: s.level = ofClamp(value, 0.0f, 1.0f); break;
+        case 7: s.subDetune = ofClamp(value, -100.0f, 100.0f); break;
+        case 8: s.subLevel = ofClamp(value, 0.0f, 1.0f); break;
+        case 9: s.subDelay = ofClamp(value, 0.0f, 1.0f); break;
+        case 14: s.tune2 = ofClamp(value, -24.0f, 24.0f); break;
+        case 15: s.fine2 = ofClamp(value, -100.0f, 100.0f); break;
+        case 16: s.level2 = ofClamp(value, 0.0f, 1.0f); break;
+        case 17: s.sub2Detune = ofClamp(value, -100.0f, 100.0f); break;
+        case 18: s.sub2Level = ofClamp(value, 0.0f, 1.0f); break;
+        case 19: s.sub2Delay = ofClamp(value, 0.0f, 1.0f); break;
+        case 20: s.filterCutoff = ofClamp(value, 20.0f, 20000.0f); break;
+        case 21: s.filterResonance = ofClamp(value, 0.0f, 1.0f); break;
+        case 22: s.filterEnvAmt = ofClamp(value, -1.0f, 1.0f); break;
+        case 23: s.filterKeyTrk = ofClamp(value, 0.0f, 1.0f); break;
+        case 24: s.envAttack = ofClamp(value, 0.001f, 5.0f); break;
+        case 25: s.envDecay = ofClamp(value, 0.001f, 5.0f); break;
+        case 26: s.envSustain = ofClamp(value, 0.0f, 1.0f); break;
+        case 27: s.envRelease = ofClamp(value, 0.001f, 10.0f); break;
+        case 28: s.lfoRate = ofClamp(value, 0.1f, 20.0f); break;
+        case 29: s.lfoDepth = ofClamp(value, 0.0f, 1.0f); break;
+        case 30: s.lfoWave = ofClamp((float)round(value), 0.0f, 2.0f); break;
+        case 31: s.lfoTarget = ofClamp((float)round(value), 0.0f, 2.0f); break;
+        case 32: s.reverbRoom = ofClamp(value, 0.0f, 1.0f); break;
+        case 33: s.reverbDamp = ofClamp(value, 0.0f, 1.0f); break;
+        case 34: s.reverbWet = ofClamp(value, 0.0f, 1.0f); break;
+    }
+}
+
+bool SequencerUI::soundParamAtPos(int x, int y, int voiceIdx, int& setIdx, int& paramIdx) const {
+    if(voiceIdx < 0 || voiceIdx >= voiceCount_) return false;
+    setIdx = voices_[voiceIdx].oscIndex;
+    paramIdx = -1;
+
+    float dx, contentY, halfW, halfH;
+    getPanelArea(dx, contentY, halfW, halfH);
+    float pad = 8.0f;
+    float lowerX = dx + pad;
+    float lowerY = contentY + halfH + 18.0f;
+    float lowerBottom = uiY_ - 8.0f;
+    float lowerH = max(0.0f, lowerBottom - lowerY);
+    if(lowerH <= 150.0f || x < lowerX || y < lowerY || y > lowerBottom) return false;
+
+    auto hit = [&](float cx, float cy) -> bool {
+        float ddx = (float)x - cx;
+        float ddy = (float)y - cy;
+        return ddx * ddx + ddy * ddy <= 20.0f * 20.0f;
+    };
+
+    float lowerW = halfW * 2.0f - pad * 2.0f;
+    float gap = 8.0f;
+    if(voices_[voiceIdx].soundPage == 0) {
+        float subW = 210.0f;
+        float oscW = (lowerW - subW - gap * 2.0f) / 2.0f - 12.0f;
+        oscW = max(198.0f, oscW);
+        float oscH = lowerH;
+        float subH = (oscH - 8.0f) / 2.0f;
+        float leftKnobX = 24.0f;
+        float rightKnobX = oscW * 0.5f + 24.0f;
+        float rowTop = 54.0f;
+        float rowBottom = oscH - 72.0f;
+        float rowGap = (rowBottom - rowTop) / 3.0f;
+        float rows[4] = {rowTop, rowTop + rowGap, rowTop + rowGap * 2.0f, rowBottom};
+        float subRightKnobX = subW * 0.5f + 24.0f;
+        float subRows[2] = {subH * 0.50f, subH * 0.82f};
+
+        float osc1X = lowerX;
+        int p1[7] = {0,1,2,3,4,5,6};
+        float kx[7] = {leftKnobX,rightKnobX,leftKnobX,rightKnobX,leftKnobX,rightKnobX,leftKnobX};
+        float ky[7] = {rows[0],rows[0],rows[1],rows[1],rows[2],rows[2],rows[3]};
+        for(int i = 0; i < 7; i++) {
+            if(hit(osc1X + kx[i], lowerY + ky[i])) { paramIdx = p1[i]; return true; }
+        }
+
+        float subX = lowerX + oscW + gap;
+        if(hit(subX + leftKnobX, lowerY + subRows[0])) { paramIdx = 7; return true; }
+        if(hit(subX + subRightKnobX, lowerY + subRows[0])) { paramIdx = 8; return true; }
+        if(hit(subX + leftKnobX, lowerY + subRows[1])) { paramIdx = 9; return true; }
+        float sub2Y = lowerY + subH + gap;
+        if(hit(subX + leftKnobX, sub2Y + subRows[0])) { paramIdx = 17; return true; }
+        if(hit(subX + subRightKnobX, sub2Y + subRows[0])) { paramIdx = 18; return true; }
+        if(hit(subX + leftKnobX, sub2Y + subRows[1])) { paramIdx = 19; return true; }
+
+        float osc2X = subX + subW + gap;
+        int p2[7] = {10,11,12,13,14,15,16};
+        for(int i = 0; i < 7; i++) {
+            if(hit(osc2X + kx[i], lowerY + ky[i])) { paramIdx = p2[i]; return true; }
+        }
+    } else {
+        float modGap = 8.0f;
+        float modW = 150.0f;
+        float kx = 24.0f;
+        float fourGap = 47.0f;
+        float fourStart = (lowerH - fourGap * 3.0f) / 2.0f + 18.0f;
+        float rows[4] = {fourStart, fourStart + fourGap, fourStart + fourGap * 2.0f, fourStart + fourGap * 3.0f};
+        const int moduleParams[4][4] = {
+            {20,21,22,23},
+            {24,25,26,27},
+            {28,29,30,31},
+            {32,33,34,-1}
+        };
+        for(int m = 0; m < 4; m++) {
+            float mx = lowerX + m * (modW + modGap);
+            for(int r = 0; r < 4; r++) {
+                if(moduleParams[m][r] < 0) continue;
+                if(hit(mx + kx, lowerY + rows[r])) {
+                    paramIdx = moduleParams[m][r];
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 int SequencerUI::voiceBadgeAtPos(int mx, int my, float startY) const {
     for(int v = 0; v < voiceCount_; v++) {
         if(!voices_[v].active) continue;
-        float rx, ry; getGroupRowRect(v, rx, ry);
-        float th  = jbFont12_ ? jbFont12_->stringHeight("Ag") : 12.0f;
-        float rowH = th + 8.0f;
-        float detailW = SQUARE_W * 5.0f / 7.0f;
-        float colW = (detailW - 16.0f) / 2.0f;
-        if(mx >= rx && mx <= rx + colW && my >= ry && my <= ry + rowH) return v;
+        float rx, ry;
+        getGroupRowRect(v, rx, ry);
+        float rowH, groupW, oscX, oscW, playX2, playW2;
+        float multX[5], multW[5], delX, delW;
+        getGroupRowLayout(v, ry, rowH, groupW, oscX, oscW, playX2, playW2, multX, multW, delX, delW);
+        if(mx >= playX2 && mx <= delX + delW && my >= ry && my <= ry + rowH) return v;
+    }
+    return -1;
+}
+
+int SequencerUI::voiceTagAtPos(int mx, int my, float startY) const {
+    for(int v = 0; v < voiceCount_; v++) {
+        if(!voices_[v].active) continue;
+        string label = "Grp" + ofToString(v + 1);
+        float th14 = jbFont14_ ? jbFont14_->stringHeight("Ag") : 14.0f;
+        float tw14 = jbFont14_ ? jbFont14_->stringWidth(label) : (float)label.size() * 8.4f;
+        float tagW = tw14 + 12.0f;
+        float tagH = th14 + 4.0f;
+        int s = voices_[v].startStep;
+        int e = voices_[v].endStep;
+        for(int i = s; i <= e; ) {
+            int rowStart = i;
+            int rowEnd = min(e, (i / COLS + 1) * COLS - 1);
+            float sx, sy;
+            getStepRect(rowStart, startY, sx, sy);
+            float tagX = sx + 2.0f;
+            float tagY = sy - tagH / 2.0f;
+            if(mx >= tagX && mx <= tagX + tagW && my >= tagY && my <= tagY + tagH) return v;
+            i = rowEnd + 1;
+        }
     }
     return -1;
 }
@@ -224,17 +503,12 @@ void SequencerUI::getVoicePanelRect(int voiceIdx, float& px, float& py, float& p
 }
 
 void SequencerUI::getGroupRowRect(int voiceIdx, float& rx, float& ry) const {
-    float leftListW = SQUARE_W * 2.0f / 7.0f;
-    float detailX   = originX_ + leftListW;
     float th   = jbFont12_ ? jbFont12_->stringHeight("Ag") : 12.0f;
     float rowH = th + 8.0f;
-    float detailW = SQUARE_W * 5.0f / 7.0f;
-    float colW = (detailW - 16.0f) / 2.0f;
-    int rows = (voiceCount_ + 1) / 2;
+    int rows = voiceCount_;
     float listTop = uiY_ - 2.0f - rows * (rowH + 6.0f);
-    int row = voiceIdx / 2;
-    int col = voiceIdx % 2;
-    rx = detailX + 8.0f + col * colW;
+    int row = voiceIdx;
+    rx = originX_ + 8.0f;
     ry = listTop + row * (rowH + 6.0f);
 }
 
@@ -256,13 +530,12 @@ void SequencerUI::getGroupRowLayout(int voiceIdx, float& ry, float& rowH,
         return jbFont12_ ? jbFont12_->stringWidth(s) : (float)s.size()*7.2f;
     };
 
-    groupW = sw("Grp"+ofToString(voiceIdx+1)) + padX*2.0f;
+    groupW = rowH;
 
-    oscX = rx + groupW;
-    oscW = sw("OSC"+ofToString(voices_[voiceIdx].oscIndex+1)) + padX*2.0f;
+    oscX = rx + groupW + gap;
+    oscW = 0.0f;
 
-    string playLabel = voices_[voiceIdx].playing ? "GO" : "STOP";
-    playX2 = oscX + oscW + gap;
+    playX2 = oscX;
     playW2 = sw("STOP") + padX*2.0f;
 
     float curX = playX2 + playW2 + gap;
@@ -288,10 +561,8 @@ void SequencerUI::draw(float originX, float monitorTop) {
     drawVoiceRanges(uiY_);
     drawGrid(uiY_);
     drawVoiceBadges(uiY_);
-    if(panelStep_ >= 0) drawPanel(panelStep_);
-    for(int v = 0; v < voiceCount_; v++) {
-        if(voices_[v].panelOpen) drawVoicePanel(v);
-    }
+    if(panelVoice_ >= 0) drawVoiceMainPanel(panelVoice_);
+    else if(panelStep_ >= 0) drawPanel(panelStep_);
 
     if(groupGesture_ != GroupGesture::NONE && gestureAnchor_ >= 0 && gestureLive_ >= 0) {
         bool isCreate = (groupGesture_ == GroupGesture::CREATE);
@@ -339,11 +610,13 @@ void SequencerUI::drawPanelTabButton(float x, float y, const char* label, bool a
     const char* state = active ? "ON" : "OFF";
     float sw = jbFont12_ ? jbFont12_->stringWidth(state) : (float)strlen(state) * 7.2f;
     float baseline = y + rowH / 2.0f + th12 / 2.0f - 2.0f;
+    bool hover = ofGetMouseX() >= x && ofGetMouseX() <= x + menuW &&
+                 ofGetMouseY() >= y && ofGetMouseY() <= y + rowH;
 
     ofSetColor(active ? colDim_ : colBg_);
     ofFill();
     ofDrawRectangle(x, y, menuW, rowH);
-    ofSetColor(colCyan_);
+    ofSetColor(hover ? colYellow_ : colCyan_);
     ofNoFill();
     ofSetLineWidth(1);
     ofDrawRectangle(x, y, menuW, rowH);
@@ -393,12 +666,18 @@ void SequencerUI::getTransportLayout(float& playX, float& playW, float& bpmX, fl
 void SequencerUI::drawGlobalTransport() {
     float playX,playW,bpmX,bpmW,volX,volW,rowY,rowH,iconCx,iconCy;
     getTransportLayout(playX,playW,bpmX,bpmW,volX,volW,rowY,rowH,iconCx,iconCy);
+    int mx = ofGetMouseX();
+    int my = ofGetMouseY();
+    auto hoverRect = [&](float x, float y, float w, float h) -> bool {
+        return mx >= x && mx <= x + w && my >= y && my <= y + h;
+    };
 
     string playLabel = globalPlaying_ ? "GO" : "STOP";
     string bpmLabel  = "BPM "+ofToString((int)globalBpm_);
     string volLabel  = "VOL "+ofToString((int)(globalVolume_*100))+"%";
 
-    ofSetColor(globalPlaying_ ? colCyan_ : colPink_); ofFill();
+    bool playHover = hoverRect(playX,rowY,playW,rowH);
+    ofSetColor(playHover ? colYellow_ : (globalPlaying_ ? colCyan_ : colPink_)); ofFill();
     ofDrawRectRounded(playX, rowY, playW, rowH, 3);
     ofSetColor(20);
     {
@@ -406,17 +685,22 @@ void SequencerUI::drawGlobalTransport() {
         drawText14(playLabel, playX + (playW - tw) / 2.0f, rowY+rowH-7.0f);
     }
 
-    ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
+    bool bpmHover = hoverRect(bpmX,rowY,bpmW,rowH);
+    ofSetColor(bpmHover ? colYellow_ : colCyan_); ofNoFill(); ofSetLineWidth(1);
     ofDrawRectangle(bpmX, rowY, bpmW, rowH); ofFill();
-    ofSetColor(colCyan_);
+    ofSetColor(bpmHover ? colYellow_ : colCyan_);
     drawText14(bpmLabel, bpmX+8.0f, rowY+rowH-7.0f);
 
-    ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
+    bool volHover = hoverRect(volX,rowY,volW,rowH);
+    ofSetColor(volHover ? colYellow_ : colCyan_); ofNoFill(); ofSetLineWidth(1);
     ofDrawRectangle(volX, rowY, volW, rowH); ofFill();
-    ofSetColor(colCyan_);
+    ofSetColor(volHover ? colYellow_ : colCyan_);
     drawText14(volLabel, volX+8.0f, rowY+rowH-7.0f);
 
-    drawIconChan(iconCx, iconCy, 14.0f, colCyan_);
+    float idx = mx - iconCx;
+    float idy = my - iconCy;
+    bool iconHover = idx*idx + idy*idy <= 14.0f*14.0f;
+    drawIconChan(iconCx, iconCy, 14.0f, iconHover ? colYellow_ : colCyan_);
 }
 
 void SequencerUI::drawIconChan(float cx, float cy, float r, ofColor fillCol) {
@@ -463,9 +747,11 @@ void SequencerUI::drawVoiceRanges(float startY) {
                 float tw14 = jbFont14_ ? jbFont14_->stringWidth(label)  : (float)label.size()*8.4f;
                 float tagW = tw14 + 12.0f, tagH = th14 + 4.0f;
                 float tagX = sx+2.0f, tagY = sy - tagH/2.0f;
+                bool tagHover = ofGetMouseX() >= tagX && ofGetMouseX() <= tagX + tagW &&
+                                ofGetMouseY() >= tagY && ofGetMouseY() <= tagY + tagH;
                 ofSetColor(colBg_); ofFill();
                 ofDrawRectangle(tagX, tagY, tagW, tagH);
-                ofSetColor(vc);
+                ofSetColor(tagHover ? colYellow_ : vc);
                 drawText14(label, tagX+6.0f, tagY+tagH-4.0f);
             }
             i = rowEnd + 1;
@@ -474,10 +760,6 @@ void SequencerUI::drawVoiceRanges(float startY) {
 }
 
 void SequencerUI::drawVoiceBadges(float startY) {
-    static const ofColor groupCols[6] = {
-        ofColor::fromHex(0x6BE4FF), ofColor::fromHex(0xFF6B9D), ofColor::fromHex(0xE1FF00),
-        ofColor::fromHex(0x39FF14), ofColor::fromHex(0xFF6A00), ofColor::fromHex(0xBF00FF)
-    };
     const float multVals[] = {0.5f,1.0f,2.0f,3.0f,4.0f};
     const char* multLabels[] = {"x.5","x1","x2","x3","x4"};
     float th  = jbFont12_ ? jbFont12_->stringHeight("Ag") : 12.0f;
@@ -489,18 +771,30 @@ void SequencerUI::drawVoiceBadges(float startY) {
         float rowH2,groupW,oscX,oscW,playX2,playW2;
         float multX[5],multW[5],delX,delW;
         getGroupRowLayout(v,ry,rowH2,groupW,oscX,oscW,playX2,playW2,multX,multW,delX,delW);
-        ofColor gc=groupCols[v%6];
+        int mx=ofGetMouseX(), my=ofGetMouseY();
 
-        ofSetColor(gc);
-        drawText12("Grp"+ofToString(v+1), rx+6, ry+textY_offset);
-
-        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
-        ofDrawRectangle(oscX, ry, oscW, rowH2); ofFill();
         ofSetColor(colCyan_);
-        drawText12("OSC"+ofToString(voices_[v].oscIndex+1), oscX+6, ry+textY_offset);
+        ofFill();
+        ofDrawRectangle(rx,ry,groupW,rowH2);
+        ofSetColor(colBg_);
+        {
+            string groupNum=ofToString(v+1);
+            float nw=jbFont12_?jbFont12_->stringWidth(groupNum):(float)groupNum.size()*7.2f;
+            drawText12(groupNum,rx+(groupW-nw)/2.0f,ry+textY_offset);
+        }
+
+        if(oscW>0.0f){
+            bool oscHover=mx>=oscX&&mx<=oscX+oscW&&my>=ry&&my<=ry+rowH2;
+            ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
+            if(oscHover) ofSetColor(colYellow_);
+            ofDrawRectangle(oscX, ry, oscW, rowH2); ofFill();
+            ofSetColor(oscHover?colYellow_:colCyan_);
+            drawText12("OSC"+ofToString(voices_[v].oscIndex+1), oscX+6, ry+textY_offset);
+        }
 
         bool isPlaying = voices_[v].playing;
-        ofSetColor(isPlaying ? colCyan_ : colPink_); ofFill();
+        bool playHover=mx>=playX2&&mx<=playX2+playW2&&my>=ry&&my<=ry+rowH2;
+        ofSetColor(playHover ? colYellow_ : (isPlaying ? colCyan_ : colPink_)); ofFill();
         ofDrawRectRounded(playX2, ry, playW2, rowH2, 3);
         ofSetColor(20);
         {
@@ -511,16 +805,18 @@ void SequencerUI::drawVoiceBadges(float startY) {
 
         for(int m=0;m<5;m++){
             bool act=(voices_[v].common.bpmMult==multVals[m]);
+            bool multHover=mx>=multX[m]&&mx<=multX[m]+multW[m]&&my>=ry&&my<=ry+rowH2;
             if(act){ ofSetColor(colYellow_); ofFill(); }
-            else    { ofSetColor(colCyan_);  ofNoFill(); ofSetLineWidth(1); }
+            else    { ofSetColor(multHover?colYellow_:colCyan_);  ofNoFill(); ofSetLineWidth(1); }
             ofDrawRectRounded(multX[m], ry, multW[m], rowH2, 2);
             ofFill();
-            ofSetColor(act?ofColor(20):colCyan_);
+            ofSetColor(act?ofColor(20):(multHover?colYellow_:colCyan_));
             drawText12(multLabels[m], multX[m]+6, ry+textY_offset);
         }
 
         if(voices_[v].delPending){
-            ofSetColor(ofColor(200,40,40)); ofFill();
+            bool delHover=mx>=delX&&mx<=delX+delW&&my>=ry&&my<=ry+rowH2;
+            ofSetColor(delHover?colYellow_:ofColor(200,40,40)); ofFill();
             ofDrawRectRounded(delX, ry, delW, rowH2, 3);
             ofSetColor(255);
             drawText12("DEL", delX+6, ry+textY_offset);
@@ -532,12 +828,6 @@ void SequencerUI::drawGrid(float startY) {
     for(int i=0;i<TOTAL_STEPS;i++){
         float sx,sy; getStepRect(i,startY,sx,sy);
         drawStep(i,sx,sy);
-    }
-    for(int v=0;v<voiceCount_;v++){
-        if(!voices_[v].active||v>=numSeqs_) continue;
-        int localStep=seqs_[v].getCurrentStep();
-        int globalStep=voices_[v].startStep+localStep;
-
     }
 }
 
@@ -773,6 +1063,403 @@ void SequencerUI::drawVoicePanel(int voiceIdx) {
     }
 }
 
+void SequencerUI::drawVoiceMainPanel(int voiceIdx) {
+    if(voiceIdx < 0 || voiceIdx >= voiceCount_) return;
+    VoiceRange& vr = voices_[voiceIdx];
+    VoiceCommonParam& cp = vr.common;
+
+    float dx,contentY,halfW,halfH;
+    getPanelArea(dx,contentY,halfW,halfH);
+
+    float pad=8.0f;
+    float pianoX=dx+pad, pianoY=contentY+pad;
+    float pianoW=halfW-pad*2, pianoH=halfH-pad*2;
+    float pianoInnerW=pianoW-8.0f;
+    float pianoUsedW=pianoInnerW/12.0f*7.0f;
+    if(panelShowPiano_){
+        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectangle(pianoX,pianoY,pianoUsedW+8.0f,pianoH); ofFill();
+        drawMiniPiano(pianoX+4,pianoY+4,pianoInnerW,pianoH-8,-1,true,voiceIdx);
+    }
+
+    float rX=dx+halfW+pad, rY=contentY+pad, rW=halfW-pad*2;
+    float modeH=24.0f;
+    float subW=(rW-8.0f)/2.0f;
+    float stepInfoW=subW-16.0f;
+    float modeW=((rW-8.0f)/3.0f)*0.9f;
+    float modeTotalW=modeW*3.0f+8.0f;
+    float modeX=rX+rW-modeTotalW;
+    float pianoRight=pianoX+pianoUsedW+8.0f;
+    float stepGap=max(8.0f,(modeX-pianoRight-stepInfoW)/2.0f);
+    float stepInfoX=pianoRight+stepGap;
+    float th14=jbFont14_?jbFont14_->stringHeight("Ag"):14.0f;
+    float th12=jbFont12_?jbFont12_->stringHeight("Ag"):12.0f;
+    float lineH=th14+8.0f;
+    int mx=ofGetMouseX(), my=ofGetMouseY();
+    auto hoverRect=[&](float x,float y,float w,float h)->bool{
+        return mx>=x&&mx<=x+w&&my>=y&&my<=y+h;
+    };
+
+    string groupPrefix="Group ";
+    string groupNumber=ofToString(voiceIdx+1);
+    float groupPrefixW=jbFont14_?jbFont14_->stringWidth(groupPrefix):(float)groupPrefix.size()*8.4f;
+    float groupTextX=stepInfoX+(stepInfoW-(groupPrefixW+24.0f))/2.0f;
+    ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
+    ofDrawRectRounded(stepInfoX,rY,stepInfoW,modeH,3); ofFill();
+    ofSetColor(colCyan_);
+    drawText14(groupPrefix,groupTextX,rY+modeH-6.0f);
+    drawText14(groupNumber,groupTextX+groupPrefixW,rY+modeH-6.0f);
+
+    float soundY=rY+modeH+4.0f;
+    string soundLabel="Sound Set "+ofToString(vr.oscIndex+1);
+    float soundTw=jbFont14_?jbFont14_->stringWidth(soundLabel):(float)soundLabel.size()*8.4f;
+    bool soundHover=hoverRect(stepInfoX,soundY,stepInfoW,modeH);
+    ofSetColor(soundHover?colYellow_:colCyan_);
+    ofNoFill();
+    ofSetLineWidth(1);
+    ofDrawRectRounded(stepInfoX,soundY,stepInfoW,modeH,3);
+    ofFill();
+    ofSetColor(colYellow_);
+    drawText14(soundLabel,stepInfoX+(stepInfoW-soundTw)/2.0f,soundY+modeH-6.0f);
+
+    bool applyHover=hoverRect(modeX,rY,modeTotalW,modeH);
+    ofSetColor(applyHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1);
+    ofDrawRectRounded(modeX,rY,modeTotalW,modeH,3); ofFill();
+    ofSetColor(applyHover?colYellow_:colCyan_);
+    {
+        string applyLabel="APPLY";
+        float tw=jbFont14_?jbFont14_->stringWidth(applyLabel):(float)applyLabel.size()*8.4f;
+        drawText14(applyLabel,modeX+(modeTotalW-tw)/2.0f,rY+modeH-6.0f);
+    }
+
+    float subY=soundY+modeH+8.0f;
+    float subH=contentY+halfH-pad-subY;
+    float lSubX=stepInfoX;
+
+    if(panelShowPiano_){
+        float ly=subY;
+        float noteFrameX=lSubX;
+        float noteFrameY=subY-2.0f;
+        float noteFrameW=subW-16.0f;
+        float noteFrameH=lineH*3.0f-2.0f;
+        ofSetColor(colCyan_);
+        ofNoFill();
+        ofSetLineWidth(1);
+        ofDrawRectRounded(noteFrameX,noteFrameY,noteFrameW,noteFrameH,3);
+        ofFill();
+
+        string noteStr=(cp.noteOverride>=0)?noteNameStr(cp.noteOverride):"AUTO";
+        ofSetColor(colCyan_); drawText14("PITCH",lSubX+8.0f,ly+th14);
+        ofSetColor(colYellow_); drawText14(noteStr,lSubX+80.0f,ly+th14);
+        ly+=lineH;
+
+        ofSetColor(colCyan_); drawText14("OCT",lSubX+8.0f,ly+th14);
+        ofSetColor(colYellow_); drawText14(ofToString(cp.pianoOctave),lSubX+80.0f,ly+th14);
+        bool octDownHover=hoverRect(lSubX+100,ly,20,lineH-4);
+        bool octUpHover=hoverRect(lSubX+124,ly,20,lineH-4);
+        ofSetColor(octDownHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectRounded(lSubX+100,ly,20,lineH-4,3); ofFill();
+        ofSetColor(octDownHover?colYellow_:colCyan_); drawText14("<",lSubX+104,ly+th14);
+        ofSetColor(octUpHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectRounded(lSubX+124,ly,20,lineH-4,3); ofFill(); ofSetColor(octUpHover?colYellow_:colCyan_); drawText14(">",lSubX+128,ly+th14);
+        ly+=lineH;
+
+        string scaleLabel="SCALE "+cp.scaleName;
+        float stw=jbFont14_?jbFont14_->stringWidth(scaleLabel):(float)scaleLabel.size()*8.4f;
+        if(stw > subW-24.0f) scaleLabel="SCALE";
+        stw=jbFont14_?jbFont14_->stringWidth(scaleLabel):(float)scaleLabel.size()*8.4f;
+        float scaleX=lSubX+(subW-16.0f-stw)/2.0f;
+        bool scaleHover=hoverRect(scaleX,ly,stw,lineH);
+        ofSetColor(scaleHover?colYellow_:(vr.scaleOpen?colPink_:colCyan_));
+        drawText14(scaleLabel,scaleX,ly+th14);
+        ly+=lineH;
+
+        bool lockHover=hoverRect(lSubX,ly,subW-16,lineH-4);
+        ofSetColor(lockHover?colYellow_:(vr.allLocked?colPink_:colCyan_)); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectRounded(lSubX,ly,subW-16,lineH-4,3); ofFill();
+        ofSetColor(lockHover?colYellow_:(vr.allLocked?colPink_:colCyan_));
+        string lockLabel=vr.allLocked?"LOCK ALL ON":"LOCK ALL OFF";
+        float ltw=jbFont14_?jbFont14_->stringWidth(lockLabel):(float)lockLabel.size()*8.4f;
+        drawText14(lockLabel,lSubX+(subW-16-ltw)/2.0f,ly+th14);
+    }
+
+    if(panelShowParameter_){
+        float graphX=modeX, graphW=modeTotalW;
+        float graphTop=rY+modeH+26.0f;
+        float graphBottom=pianoY+pianoH;
+        float labelBaseline=graphBottom-2.0f;
+        float barW=18.0f;
+        float barGap=(graphW-7.0f*barW)/6.0f;
+        if(barGap<6.0f){
+            barGap=6.0f;
+            barW=(graphW-6.0f*barGap)/7.0f;
+        }
+        float barY=graphTop+10.0f;
+        float barH=max(24.0f,labelBaseline-th12-2.0f-barY);
+        float totalBarW=7.0f*(barW+barGap)-barGap;
+        float bStartX=graphX+(graphW-totalBarW)/2.0f;
+
+        auto drawVBar=[&](float bx,float val,float maxVal,const char* label){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            float filled=ofClamp(val/maxVal,0.0f,1.0f);
+            ofSetColor(colBg_); ofFill(); ofDrawRectangle(bx,barY,barW,barH);
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
+            ofSetColor(barHover?colYellow_:colCyan_); ofFill(); ofDrawRectangle(bx,barY+barH*(1.0f-filled),barW,barH*filled);
+            float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
+            ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
+        };
+        drawVBar(bStartX,              (float)cp.velocity,127.0f,"VEL");
+        drawVBar(bStartX+(barW+barGap),cp.gate,           1.0f,  "GAT");
+        drawVBar(bStartX+2*(barW+barGap),cp.prob,         1.0f,  "PRB");
+
+        auto drawStepBar=[&](float bx,int val,int maxVal,const char* label){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            float btnH=(barH-((float)(maxVal-1))*2.0f)/(float)maxVal;
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
+            for(int g=1;g<=maxVal;g++){
+                float gy=barY+barH-(g*btnH+(g-1)*2);
+                ofSetColor(g==val?colYellow_:colBg_); ofFill(); ofDrawRectangle(bx+1,gy,barW-2,btnH);
+            }
+            float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
+            ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
+        };
+        drawStepBar(bStartX+3*(barW+barGap),cp.gridDiv,  8,"GRD");
+        drawStepBar(bStartX+4*(barW+barGap),cp.noteRepeat,8,"RPT");
+
+        auto drawToggleBar=[&](float bx,bool val,const char* label){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            float glH=(barH-4)/2.0f;
+            float onw=jbFont12_?jbFont12_->stringWidth("ON"):(float)2*7.2f;
+            float ofw=jbFont12_?jbFont12_->stringWidth("OF"):(float)2*7.2f;
+            ofSetColor(val?colCyan_:colBg_); ofFill(); ofDrawRectangle(bx,barY,barW,glH);
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,glH); ofFill();
+            ofSetColor(val?ofColor(20):colCyan_); drawText12("ON",bx+(barW-onw)/2.0f,barY+glH/2.0f+th12/2.0f);
+            ofSetColor(!val?colCyan_:colBg_); ofFill(); ofDrawRectangle(bx,barY+glH+4,barW,glH);
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY+glH+4,barW,glH); ofFill();
+            ofSetColor(!val?ofColor(20):colCyan_); drawText12("OF",bx+(barW-ofw)/2.0f,barY+glH+4+glH/2.0f+th12/2.0f);
+            float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
+            ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
+        };
+        drawToggleBar(bStartX+5*(barW+barGap),cp.glide,"GLD");
+
+        auto drawOctBar=[&](float bx){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            const int octVals[]={-2,-1,0,1,2};
+            float btnH=(barH-4.0f*2.0f)/5.0f;
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
+            for(int o=0;o<5;o++){
+                float oy=barY+barH-((o+1)*btnH+o*2.0f);
+                ofSetColor(cp.octShift==octVals[o]?colYellow_:colBg_); ofFill();
+                ofDrawRectangle(bx+1.0f,oy,barW-2.0f,btnH);
+            }
+            float lw=jbFont12_?jbFont12_->stringWidth("OCT"):(float)3*7.2f;
+            ofSetColor(barHover?colYellow_:colCyan_); drawText12("OCT",bx+(barW-lw)/2.0f,labelBaseline);
+        };
+        drawOctBar(bStartX+6*(barW+barGap));
+    }
+
+    {
+        float lowerX=dx+pad;
+        float lowerY=contentY+halfH+18.0f;
+        float lowerBottom=uiY_-8.0f;
+        float lowerH=max(0.0f,lowerBottom-lowerY);
+        if(lowerH>150.0f){
+            const SoundSetUIData& ss = soundSets_[vr.oscIndex];
+            auto intText=[&](float v)->string{ return ofToString((int)round(v)); };
+            auto pctText=[&](float v)->string{ return ofToString((int)round(v*100.0f)); };
+            auto norm=[&](float v,float mn,float mx)->float{
+                if(mx<=mn) return 0.0f;
+                return ofClamp((v-mn)/(mx-mn),0.0f,1.0f);
+            };
+            auto drawKnob=[&](float cx,float cy,const string& label,const string& value,float amount){
+                ofColor valueCol=(amount>0.0f)?colYellow_:colCyan_;
+                ofSetColor(valueCol);
+                ofNoFill();
+                ofSetLineWidth(1);
+                ofDrawCircle(cx,cy,14.0f);
+                float ang=ofMap(ofClamp(amount,0.0f,1.0f),0.0f,1.0f,-140.0f,140.0f)*DEG_TO_RAD;
+                ofDrawLine(cx,cy,cx+cos(ang)*10.0f,cy+sin(ang)*10.0f);
+                ofFill();
+                ofSetColor(colCyan_);
+                drawText12(label,cx+22.0f,cy-5.0f);
+                ofSetColor(valueCol);
+                drawText12(value,cx+22.0f,cy+16.0f);
+            };
+
+            auto drawModule=[&](float x,float y,float w,float h,const char* title){
+                ofSetColor(colCyan_);
+                ofNoFill();
+                ofSetLineWidth(1);
+                ofDrawRectangle(x,y,w,h);
+                ofFill();
+                float tw=jbFont12_?jbFont12_->stringWidth(title):(float)strlen(title)*7.2f;
+                float titleW=w-2.0f;
+                float titleH=16.0f;
+                float titleX=x+1.0f;
+                float titleY=y+1.0f;
+                ofSetColor(colCyan_);
+                ofFill();
+                ofDrawRectangle(titleX,titleY,titleW,titleH);
+                ofSetColor(colBg_);
+                drawText12(title,x+(w-tw)/2.0f,titleY+13.0f);
+            };
+
+            auto drawLinkLine=[&](float x1,float y1,float x2,float y2){
+                ofSetColor(colCyan_);
+                ofNoFill();
+                ofSetLineWidth(2);
+                ofDrawLine(x1,y1,x2,y2);
+                ofFill();
+                ofDrawCircle(x1,y1,3.5f);
+                ofDrawCircle(x2,y2,3.5f);
+                ofSetLineWidth(1);
+            };
+
+            float lowerW=halfW*2.0f-pad*2.0f;
+            float gap=8.0f;
+            float subW=210.0f;
+            float oscW=(lowerW-subW-gap*2.0f)/2.0f-12.0f;
+            oscW=max(198.0f,oscW);
+            float oscH=lowerH;
+            float subH=(oscH-8.0f)/2.0f;
+            float x=lowerX;
+            float y=lowerY;
+
+            float leftKnobX=24.0f;
+            float rightKnobX=oscW*0.5f+24.0f;
+            float rowTop=54.0f;
+            float rowBottom=oscH-72.0f;
+            float rowGap=(rowBottom-rowTop)/3.0f;
+            float row1=rowTop;
+            float row2=rowTop+rowGap;
+            float row3=rowTop+rowGap*2.0f;
+            float row4=rowBottom;
+            float footerY=oscH-28.0f;
+            float subRightKnobX=subW*0.5f+24.0f;
+            float subKnobY1=subH*0.50f;
+            float subKnobY2=subH*0.82f;
+
+            if(vr.soundPage==0){
+                drawModule(x,y,oscW,oscH,"OSC 1");
+                drawKnob(x+leftKnobX,y+row1,"SAW",intText(ss.mainWave[0]),ss.mainWave[0]/100.0f);
+                drawKnob(x+rightKnobX,y+row1,"SQR",intText(ss.mainWave[1]),ss.mainWave[1]/100.0f);
+                drawKnob(x+leftKnobX,y+row2,"TRI",intText(ss.mainWave[2]),ss.mainWave[2]/100.0f);
+                drawKnob(x+rightKnobX,y+row2,"SIN",intText(ss.mainWave[3]),ss.mainWave[3]/100.0f);
+                drawKnob(x+leftKnobX,y+row3,"TUNE",intText(ss.tune),norm(ss.tune,-24.0f,24.0f));
+                drawKnob(x+rightKnobX,y+row3,"FINE",intText(ss.fine),norm(ss.fine,-100.0f,100.0f));
+                drawKnob(x+leftKnobX,y+row4,"LEVEL",pctText(ss.level),ss.level);
+                ofSetColor(colYellow_); drawText12("S 100%",x+50.0f,y+footerY);
+
+                x+=oscW+gap;
+                drawModule(x,y,subW,subH,"SUB 1");
+                drawKnob(x+leftKnobX,y+subKnobY1,"DETUNE",intText(ss.subDetune),norm(ss.subDetune,-100.0f,100.0f));
+                drawKnob(x+subRightKnobX,y+subKnobY1,"LEVEL",pctText(ss.subLevel),ss.subLevel);
+                drawKnob(x+leftKnobX,y+subKnobY2,"DELAY",pctText(ss.subDelay),ss.subDelay);
+                drawLinkLine(x+12.0f,y+24.0f,x-gap-12.0f,y+24.0f);
+
+                y+=subH+gap;
+                drawModule(x,y,subW,subH,"SUB 2");
+                drawKnob(x+leftKnobX,y+subKnobY1,"DETUNE",intText(ss.sub2Detune),norm(ss.sub2Detune,-100.0f,100.0f));
+                drawKnob(x+subRightKnobX,y+subKnobY1,"LEVEL",pctText(ss.sub2Level),ss.sub2Level);
+                drawKnob(x+leftKnobX,y+subKnobY2,"DELAY",pctText(ss.sub2Delay),ss.sub2Delay);
+
+                x+=subW+gap;
+                y=lowerY;
+                drawLinkLine(x-gap-12.0f,lowerY+subH+gap+subH-20.0f,x+12.0f,lowerY+subH+gap+subH-20.0f);
+                drawModule(x,y,oscW,oscH,"OSC 2");
+                drawKnob(x+leftKnobX,y+row1,"SAW",intText(ss.main2Wave[0]),ss.main2Wave[0]/100.0f);
+                drawKnob(x+rightKnobX,y+row1,"SQR",intText(ss.main2Wave[1]),ss.main2Wave[1]/100.0f);
+                drawKnob(x+leftKnobX,y+row2,"TRI",intText(ss.main2Wave[2]),ss.main2Wave[2]/100.0f);
+                drawKnob(x+rightKnobX,y+row2,"SIN",intText(ss.main2Wave[3]),ss.main2Wave[3]/100.0f);
+                drawKnob(x+leftKnobX,y+row3,"TUNE",intText(ss.tune2),norm(ss.tune2,-24.0f,24.0f));
+                drawKnob(x+rightKnobX,y+row3,"FINE",intText(ss.fine2),norm(ss.fine2,-100.0f,100.0f));
+                drawKnob(x+leftKnobX,y+row4,"LEVEL",pctText(ss.level2),ss.level2);
+                ofSetColor(colYellow_); drawText12("S 100%",x+50.0f,y+footerY);
+            } else {
+                float modGap=8.0f;
+                float modW=150.0f;
+                float modH=lowerH;
+                float modX=lowerX;
+                float kx=24.0f;
+                float fourGap=47.0f;
+                float fourStart=(modH-fourGap*3.0f)/2.0f+18.0f;
+                float kr1=fourStart;
+                float kr2=fourStart+fourGap;
+                float kr3=fourStart+fourGap*2.0f;
+                float kr4=fourStart+fourGap*3.0f;
+
+                drawModule(modX,lowerY,modW,modH,"FILTER");
+                drawKnob(modX+kx,lowerY+kr1,"CUT",intText(ss.filterCutoff),norm(ss.filterCutoff,20.0f,20000.0f));
+                drawKnob(modX+kx,lowerY+kr2,"RES",pctText(ss.filterResonance),ss.filterResonance);
+                drawKnob(modX+kx,lowerY+kr3,"ENV",intText(ss.filterEnvAmt*100.0f),norm(ss.filterEnvAmt,-1.0f,1.0f));
+                drawKnob(modX+kx,lowerY+kr4,"KEY",pctText(ss.filterKeyTrk),ss.filterKeyTrk);
+
+                modX+=modW+modGap;
+                drawModule(modX,lowerY,modW,modH,"ENV");
+                drawKnob(modX+kx,lowerY+kr1,"ATK",intText(ss.envAttack*1000.0f),norm(ss.envAttack,0.001f,5.0f));
+                drawKnob(modX+kx,lowerY+kr2,"DEC",intText(ss.envDecay*1000.0f),norm(ss.envDecay,0.001f,5.0f));
+                drawKnob(modX+kx,lowerY+kr3,"SUS",pctText(ss.envSustain),ss.envSustain);
+                drawKnob(modX+kx,lowerY+kr4,"REL",intText(ss.envRelease*1000.0f),norm(ss.envRelease,0.001f,10.0f));
+
+                modX+=modW+modGap;
+                drawModule(modX,lowerY,modW,modH,"LFO");
+                drawKnob(modX+kx,lowerY+kr1,"RATE",intText(ss.lfoRate),norm(ss.lfoRate,0.1f,20.0f));
+                drawKnob(modX+kx,lowerY+kr2,"DEPTH",pctText(ss.lfoDepth),ss.lfoDepth);
+                drawKnob(modX+kx,lowerY+kr3,"WAVE",intText(ss.lfoWave),norm(ss.lfoWave,0.0f,2.0f));
+                ofSetColor(colCyan_); drawText12("TARGET",modX+kx+22.0f,lowerY+kr4-8.0f);
+                drawText12(intText(ss.lfoTarget),modX+kx+22.0f,lowerY+kr4+13.0f);
+
+                modX+=modW+modGap;
+                drawModule(modX,lowerY,modW,modH,"REVERB");
+                drawKnob(modX+kx,lowerY+kr1,"ROOM",pctText(ss.reverbRoom),ss.reverbRoom);
+                drawKnob(modX+kx,lowerY+kr2,"DAMP",pctText(ss.reverbDamp),ss.reverbDamp);
+                drawKnob(modX+kx,lowerY+kr3,"WET",pctText(ss.reverbWet),ss.reverbWet);
+            }
+
+            float blink=0.45f+0.55f*(0.5f+0.5f*sin(ofGetElapsedTimef()*2.2f));
+            ofSetColor(colCyan_,(int)(255.0f*blink));
+            drawText14(vr.soundPage==0?">":"<",lowerX+lowerW-18.0f,lowerY+lowerH/2.0f+th14/2.0f);
+        }
+    }
+
+    if(panelShowPiano_ && vr.scaleOpen){
+        const char* scaleNames[]={"major","lydian","lydianb7","mixolydian",
+            "naturalMinor","harmonicMin","melodicMin","dorian","phrygian",
+            "phrygianDom","locrian","locrianS2","majorPenta","minorPenta",
+            "diminished","augmented","minorBlues","majorBlues","wholeTone",
+            "chromatic","bebopMajor","bebopDom"};
+        const char* scaleLabels[]={"Major","Lydian","Lydian b7","Mixolydian",
+            "Nat Minor","Harm Min","Mel Min","Dorian","Phrygian",
+            "Phryg Dom","Locrian","Locrian#2","Maj Penta","Min Penta",
+            "Diminish","Augmented","Min Blues","Maj Blues","Whole Tone",
+            "Chromatic","Bebop Maj","Bebop Dom"};
+        float rowH=18.0f;
+        float cpx=modeX, cpy=subY+lineH*2;
+        float panelW=modeTotalW;
+        float maxPanelH=subH-lineH*2-8.0f;
+        float visH=min(24.0f*rowH+8.0f,maxPanelH);
+        ofSetColor(22); ofFill(); ofDrawRectangle(cpx,cpy,panelW,visH);
+        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(cpx,cpy,panelW,visH); ofFill();
+        int visRows=(int)(visH/rowH);
+        const char* noteNames[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+        float rootW=panelW/6.0f;
+        for(int r=0;r<12;r++){
+            float rx=cpx+(r%6)*rootW;
+            float ry=cpy+(r/6)*rowH;
+            bool sel=(cp.scaleRoot%12)==r;
+            bool rootHover=hoverRect(rx,ry,rootW,rowH);
+            ofSetColor((sel||rootHover)?colYellow_:colCyan_);
+            drawText12(noteNames[r],rx+4.0f,ry+15.0f);
+        }
+        for(int s=0;s<22 && s<visRows-2;s++){
+            bool sel=(cp.scaleName==scaleNames[s]);
+            bool scaleRowHover=hoverRect(cpx,cpy+(s+2)*rowH,panelW,rowH);
+            ofSetColor((sel||scaleRowHover)?colYellow_:colCyan_);
+            drawText12(scaleLabels[s],cpx+8.0f,cpy+15.0f+(s+2)*rowH);
+        }
+    }
+}
+
 // ========== ステップパネル ==========
 
 void SequencerUI::drawPanel(int stepIdx) {
@@ -817,15 +1504,15 @@ void SequencerUI::drawPanel(int stepIdx) {
     StepUIData::StepMode modes[]={StepUIData::ON,StepUIData::OFF,StepUIData::SKIP};
     for(int m=0;m<3;m++){
         bool act=(d.mode==modes[m]);
+        bool modeHover=ofGetMouseX()>=modeX+m*(modeW+4)&&ofGetMouseX()<=modeX+m*(modeW+4)+modeW&&
+                       ofGetMouseY()>=rY&&ofGetMouseY()<=rY+modeH;
         if(act){ ofSetColor(colPink_); ofFill(); }
-        else   { ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); }
+        else   { ofSetColor(modeHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); }
         ofDrawRectRounded(modeX+m*(modeW+4),rY,modeW,modeH,3); ofFill();
-        ofSetColor(act?ofColor(20):colCyan_);
+        ofSetColor(act?ofColor(20):(modeHover?colYellow_:colCyan_));
         float tw=jbFont14_?jbFont14_->stringWidth(modeLabels[m]):(float)strlen(modeLabels[m])*8.4f;
         drawText14(modeLabels[m],modeX+m*(modeW+4)+(modeW-tw)/2.0f,rY+modeH-6.0f);
     }
-
-    if(!panelShowParameter_) return;
 
     float subY=rY+modeH+8.0f;
     float subH=contentY+halfH-pad-subY;
@@ -833,6 +1520,10 @@ void SequencerUI::drawPanel(int stepIdx) {
     float th14=jbFont14_?jbFont14_->stringHeight("Ag"):14.0f;
     float lineH=th14+8.0f;
     float th12=jbFont12_?jbFont12_->stringHeight("Ag"):12.0f;
+    int mx=ofGetMouseX(), my=ofGetMouseY();
+    auto hoverRect=[&](float x,float y,float w,float h)->bool{
+        return mx>=x&&mx<=x+w&&my>=y&&my<=y+h;
+    };
 
     auto drawLock14=[&](float lx,float ly,bool locked){
         ofSetColor(locked?colPink_:colCyan_);
@@ -852,110 +1543,122 @@ void SequencerUI::drawPanel(int stepIdx) {
         ofSetLineWidth(1);
     };
 
-    float ly=subY;
-    float noteFrameX=lSubX;
-    float noteFrameY=subY-2.0f;
-    float noteFrameW=subW-16.0f;
-    float noteFrameH=lineH*3.0f-2.0f;
-    ofSetColor(d.lockNote?colPink_:colCyan_);
-    ofNoFill();
-    ofSetLineWidth(1);
-    ofDrawRectRounded(noteFrameX,noteFrameY,noteFrameW,noteFrameH,3);
-    ofFill();
+    if(panelShowPiano_){
+        float ly=subY;
+        float noteFrameX=lSubX;
+        float noteFrameY=subY-2.0f;
+        float noteFrameW=subW-16.0f;
+        float noteFrameH=lineH*3.0f-2.0f;
+        ofSetColor(d.lockNote?colPink_:colCyan_);
+        ofNoFill();
+        ofSetLineWidth(1);
+        ofDrawRectRounded(noteFrameX,noteFrameY,noteFrameW,noteFrameH,3);
+        ofFill();
 
-    bool hasChord=!d.chordName.empty();
-    string noteLabel=hasChord?"ROOT":"NOTE";
-    int rootNote=(hasChord&&d.chordNoteCount>0&&d.chordNotes[0]>=0)?d.chordNotes[0]:d.noteOverride;
-    string noteStr=(rootNote>=0)?noteNameStr(rootNote):"AUTO";
-    float lockIconX=(stepInfoX-(pianoX+pianoUsedW+8.0f))/2.0f+(pianoX+pianoUsedW+8.0f);
-    ofSetColor(colCyan_); drawText14(noteLabel,lSubX+8.0f,ly+th14);
-    ofSetColor(colYellow_); drawText14(noteStr,lSubX+80.0f,ly+th14);
-    drawLock14(lockIconX,ly+th14/2.0f,d.lockNote);
-    ly+=lineH;
+        bool hasChord=!d.chordName.empty();
+        string noteLabel=hasChord?"ROOT":"NOTE";
+        int rootNote=(hasChord&&d.chordNoteCount>0&&d.chordNotes[0]>=0)?d.chordNotes[0]:d.noteOverride;
+        string noteStr=(rootNote>=0)?noteNameStr(rootNote):"AUTO";
+        float lockIconX=(stepInfoX-(pianoX+pianoUsedW+8.0f))/2.0f+(pianoX+pianoUsedW+8.0f);
+        ofSetColor(colCyan_); drawText14(noteLabel,lSubX+8.0f,ly+th14);
+        ofSetColor(colYellow_); drawText14(noteStr,lSubX+80.0f,ly+th14);
+        drawLock14(lockIconX,ly+th14/2.0f,d.lockNote);
+        ly+=lineH;
 
-    ofSetColor(colCyan_); drawText14("OCT",lSubX+8.0f,ly+th14);
-    ofSetColor(colYellow_); drawText14(ofToString(pianoOctave_),lSubX+80.0f,ly+th14);
-    ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
-    ofDrawRectRounded(lSubX+100,ly,20,lineH-4,3); ofFill(); ofSetColor(colCyan_); drawText14("<",lSubX+104,ly+th14);
-    ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1);
-    ofDrawRectRounded(lSubX+124,ly,20,lineH-4,3); ofFill(); ofSetColor(colCyan_); drawText14(">",lSubX+128,ly+th14);
-    ly+=lineH;
+        ofSetColor(colCyan_); drawText14("OCT",lSubX+8.0f,ly+th14);
+        ofSetColor(colYellow_); drawText14(ofToString(pianoOctave_),lSubX+80.0f,ly+th14);
+        bool octDownHover=hoverRect(lSubX+100,ly,20,lineH-4);
+        bool octUpHover=hoverRect(lSubX+124,ly,20,lineH-4);
+        ofSetColor(octDownHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectRounded(lSubX+100,ly,20,lineH-4,3); ofFill(); ofSetColor(octDownHover?colYellow_:colCyan_); drawText14("<",lSubX+104,ly+th14);
+        ofSetColor(octUpHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectRounded(lSubX+124,ly,20,lineH-4,3); ofFill(); ofSetColor(octUpHover?colYellow_:colCyan_); drawText14(">",lSubX+128,ly+th14);
+        ly+=lineH;
 
-    string chordLabel=d.chordName.empty()?"CHORD":d.chordName;
-    ofSetColor(!d.chordName.empty()?colYellow_:(d.chordPanelOpen?colPink_:colCyan_));
-    float ctw=jbFont14_?jbFont14_->stringWidth(chordLabel):(float)chordLabel.size()*8.4f;
-    drawText14(chordLabel,lSubX+(subW-16-ctw)/2.0f,ly+th14);
-    ly+=lineH;
+        string chordLabel=d.chordName.empty()?"CHORD":d.chordName;
+        float ctw=jbFont14_?jbFont14_->stringWidth(chordLabel):(float)chordLabel.size()*8.4f;
+        float chordX=lSubX+(subW-16-ctw)/2.0f;
+        bool chordHover=hoverRect(chordX,ly,ctw,lineH);
+        ofSetColor((!d.chordName.empty()||chordHover)?colYellow_:(d.chordPanelOpen?colPink_:colCyan_));
+        drawText14(chordLabel,chordX,ly+th14);
+        ly+=lineH;
 
-    int vi2=voiceAtStep(stepIdx); bool allLocked=(vi2>=0)?voices_[vi2].allLocked:false;
-    ofSetColor(allLocked?colPink_:colCyan_); ofNoFill(); ofSetLineWidth(1);
-    ofDrawRectRounded(lSubX,ly,subW-16,lineH-4,3); ofFill();
-    ofSetColor(allLocked?colPink_:colCyan_);
-    string lockLabel=allLocked?"ALL UNLOCK":"ALL LOCK";
-    float ltw=jbFont14_?jbFont14_->stringWidth(lockLabel):(float)lockLabel.size()*8.4f;
-    drawText14(lockLabel,lSubX+(subW-16-ltw)/2.0f,ly+th14);
-
-    float graphX=modeX, graphW=modeTotalW;
-    float graphTop=rY+modeH+26.0f;
-    float graphBottom=pianoY+pianoH;
-    float labelBaseline=graphBottom-2.0f;
-    float barW=18.0f;
-    float barGap=(graphW-7.0f*barW)/6.0f;
-    if(barGap<6.0f){
-        barGap=6.0f;
-        barW=(graphW-6.0f*barGap)/7.0f;
+        int vi2=voiceAtStep(stepIdx); bool allLocked=(vi2>=0)?voices_[vi2].allLocked:false;
+        bool lockHover=hoverRect(lSubX,ly,subW-16,lineH-4);
+        ofSetColor(lockHover?colYellow_:(allLocked?colPink_:colCyan_)); ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectRounded(lSubX,ly,subW-16,lineH-4,3); ofFill();
+        ofSetColor(lockHover?colYellow_:(allLocked?colPink_:colCyan_));
+        string lockLabel=allLocked?"ALL UNLOCK":"ALL LOCK";
+        float ltw=jbFont14_?jbFont14_->stringWidth(lockLabel):(float)lockLabel.size()*8.4f;
+        drawText14(lockLabel,lSubX+(subW-16-ltw)/2.0f,ly+th14);
     }
-    float barY=graphTop+10.0f;
-    float paramLockY=(rY+modeH+barY)/2.0f;
-    float barH=max(24.0f,labelBaseline-th12-2.0f-barY);
-    float totalBarW=7.0f*(barW+barGap)-barGap;
-    float bStartX=graphX+(graphW-totalBarW)/2.0f;
 
-    auto drawVBar=[&](float bx,float val,float maxVal,bool locked,const char* label){
-        float filled=val/maxVal;
-        ofSetColor(colBg_); ofFill(); ofDrawRectangle(bx,barY,barW,barH);
-        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
-        ofSetColor(locked?colPink_:colCyan_); ofFill(); ofDrawRectangle(bx,barY+barH*(1.0f-filled),barW,barH*filled);
-        float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
-        ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
-        drawLock14(bx+barW/2.0f,paramLockY,locked);
-    };
-    drawVBar(bStartX,              (float)d.velocity,127.0f,d.lockVelocity,  "VEL");
-    drawVBar(bStartX+(barW+barGap),d.gate,           1.0f,  d.lockGate,      "GAT");
-    drawVBar(bStartX+2*(barW+barGap),d.prob,         1.0f,  d.lockProb,      "PRB");
-
-    auto drawStepBar=[&](float bx,int val,int maxVal,bool locked,const char* label){
-        float btnH=(barH-((float)(maxVal-1))*2.0f)/(float)maxVal;
-        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
-        for(int g=1;g<=maxVal;g++){
-            float gy=barY+barH-(g*btnH+(g-1)*2);
-            ofSetColor(g==val?colYellow_:colBg_); ofFill(); ofDrawRectangle(bx+1,gy,barW-2,btnH);
+    if(panelShowParameter_){
+        float graphX=modeX, graphW=modeTotalW;
+        float graphTop=rY+modeH+26.0f;
+        float graphBottom=pianoY+pianoH;
+        float labelBaseline=graphBottom-2.0f;
+        float barW=18.0f;
+        float barGap=(graphW-7.0f*barW)/6.0f;
+        if(barGap<6.0f){
+            barGap=6.0f;
+            barW=(graphW-6.0f*barGap)/7.0f;
         }
-        float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
-        ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
-        drawLock14(bx+barW/2.0f,paramLockY,locked);
-    };
-    drawStepBar(bStartX+3*(barW+barGap),d.gridDiv,  8,d.lockGridDiv,  "GRD");
-    drawStepBar(bStartX+4*(barW+barGap),d.noteRepeat,8,d.lockNoteRepeat,"RPT");
+        float barY=graphTop+10.0f;
+        float paramLockY=(rY+modeH+barY)/2.0f;
+        float barH=max(24.0f,labelBaseline-th12-2.0f-barY);
+        float totalBarW=7.0f*(barW+barGap)-barGap;
+        float bStartX=graphX+(graphW-totalBarW)/2.0f;
 
-    auto drawToggleBar=[&](float bx,bool val,bool locked,const char* label){
-        float glH=(barH-4)/2.0f;
-        float onw=jbFont12_?jbFont12_->stringWidth("ON"):(float)2*7.2f;
-        float ofw=jbFont12_?jbFont12_->stringWidth("OF"):(float)2*7.2f;
-        ofSetColor(val?colCyan_:colBg_); ofFill(); ofDrawRectangle(bx,barY,barW,glH);
-        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,glH); ofFill();
-        ofSetColor(val?ofColor(20):colCyan_); drawText12("ON",bx+(barW-onw)/2.0f,barY+glH/2.0f+th12/2.0f);
-        ofSetColor(!val?colCyan_:colBg_); ofFill(); ofDrawRectangle(bx,barY+glH+4,barW,glH);
-        ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY+glH+4,barW,glH); ofFill();
-        ofSetColor(!val?ofColor(20):colCyan_); drawText12("OF",bx+(barW-ofw)/2.0f,barY+glH+4+glH/2.0f+th12/2.0f);
-        float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
-        ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
-        drawLock14(bx+barW/2.0f,paramLockY,locked);
-    };
-    drawToggleBar(bStartX+5*(barW+barGap),d.glide,  d.lockGlide,"GLD");
-    drawToggleBar(bStartX+6*(barW+barGap),d.strumOn,d.lockStrum,"STR");
+        auto drawVBar=[&](float bx,float val,float maxVal,bool locked,const char* label){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            float filled=val/maxVal;
+            ofSetColor(colBg_); ofFill(); ofDrawRectangle(bx,barY,barW,barH);
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
+            ofSetColor(barHover?colYellow_:(locked?colPink_:colCyan_)); ofFill(); ofDrawRectangle(bx,barY+barH*(1.0f-filled),barW,barH*filled);
+            float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
+            ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
+            drawLock14(bx+barW/2.0f,paramLockY,locked);
+        };
+        drawVBar(bStartX,              (float)d.velocity,127.0f,d.lockVelocity,  "VEL");
+        drawVBar(bStartX+(barW+barGap),d.gate,           1.0f,  d.lockGate,      "GAT");
+        drawVBar(bStartX+2*(barW+barGap),d.prob,         1.0f,  d.lockProb,      "PRB");
 
-    if(d.chordPanelOpen){
+        auto drawStepBar=[&](float bx,int val,int maxVal,bool locked,const char* label){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            float btnH=(barH-((float)(maxVal-1))*2.0f)/(float)maxVal;
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,barH); ofFill();
+            for(int g=1;g<=maxVal;g++){
+                float gy=barY+barH-(g*btnH+(g-1)*2);
+                ofSetColor(g==val?colYellow_:colBg_); ofFill(); ofDrawRectangle(bx+1,gy,barW-2,btnH);
+            }
+            float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
+            ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
+            drawLock14(bx+barW/2.0f,paramLockY,locked);
+        };
+        drawStepBar(bStartX+3*(barW+barGap),d.gridDiv,  8,d.lockGridDiv,  "GRD");
+        drawStepBar(bStartX+4*(barW+barGap),d.noteRepeat,8,d.lockNoteRepeat,"RPT");
+
+        auto drawToggleBar=[&](float bx,bool val,bool locked,const char* label){
+            bool barHover=hoverRect(bx,barY,barW,barH);
+            float glH=(barH-4)/2.0f;
+            float onw=jbFont12_?jbFont12_->stringWidth("ON"):(float)2*7.2f;
+            float ofw=jbFont12_?jbFont12_->stringWidth("OF"):(float)2*7.2f;
+            ofSetColor(val?colCyan_:colBg_); ofFill(); ofDrawRectangle(bx,barY,barW,glH);
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY,barW,glH); ofFill();
+            ofSetColor(val?ofColor(20):colCyan_); drawText12("ON",bx+(barW-onw)/2.0f,barY+glH/2.0f+th12/2.0f);
+            ofSetColor(!val?colCyan_:colBg_); ofFill(); ofDrawRectangle(bx,barY+glH+4,barW,glH);
+            ofSetColor(barHover?colYellow_:colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(bx,barY+glH+4,barW,glH); ofFill();
+            ofSetColor(!val?ofColor(20):colCyan_); drawText12("OF",bx+(barW-ofw)/2.0f,barY+glH+4+glH/2.0f+th12/2.0f);
+            float lw=jbFont12_?jbFont12_->stringWidth(label):(float)strlen(label)*7.2f;
+            ofSetColor(colCyan_); drawText12(label,bx+(barW-lw)/2.0f,labelBaseline);
+            drawLock14(bx+barW/2.0f,paramLockY,locked);
+        };
+        drawToggleBar(bStartX+5*(barW+barGap),d.glide,  d.lockGlide,"GLD");
+        drawToggleBar(bStartX+6*(barW+barGap),d.strumOn,d.lockStrum,"STR");
+    }
+
+    if(panelShowPiano_ && d.chordPanelOpen){
         int vi=voiceAtStep(stepIdx);
         int scaleRoot=(vi>=0)?voices_[vi].common.scaleRoot:0;
         string scaleName=(vi>=0)?voices_[vi].common.scaleName:"naturalMinor";
@@ -982,8 +1685,13 @@ void SequencerUI::drawPanel(int stepIdx) {
         ofSetColor(22); ofFill(); ofDrawRectangle(cpx,cpy,panelW,visH);
         ofSetColor(colCyan_); ofNoFill(); ofSetLineWidth(1); ofDrawRectangle(cpx,cpy,panelW,visH); ofFill();
         int visRows=(int)(visH/rowH);
-        ofSetColor(colPink_);
+        float deleteW=jbFont12_?jbFont12_->stringWidth(". DELETE"):(float)8*7.2f;
+        float panelOffW=jbFont12_?jbFont12_->stringWidth(". PANEL OFF"):(float)11*7.2f;
+        bool deleteHover=hoverRect(cpx+8,cpy,deleteW,rowH);
+        bool panelOffHover=hoverRect(cpx+8,cpy+rowH,panelOffW,rowH);
+        ofSetColor(deleteHover?colYellow_:colPink_);
         ofDrawBitmapString(". DELETE",cpx+8,cpy+15);
+        ofSetColor(panelOffHover?colYellow_:colPink_);
         ofDrawBitmapString(". PANEL OFF",cpx+8,cpy+33);
         int entryRows=max(0,visRows-actionRows);
         int selIdx=0; for(int i=0;i<nEntries;i++) if(d.chordName==entries2[i].lb){selIdx=i;break;}
@@ -992,7 +1700,9 @@ void SequencerUI::drawPanel(int stepIdx) {
             int vy=cc-scrollOff; if(vy<0||vy>=entryRows) continue;
             int row=vy+actionRows;
             bool sel=(d.chordName==entries2[cc].lb);
-            ofSetColor(sel?colYellow_:colCyan_);
+            float entryW=jbFont12_?jbFont12_->stringWidth(entries2[cc].lb):(float)entries2[cc].lb.size()*7.2f;
+            bool entryHover=hoverRect(cpx+8,cpy+row*rowH,entryW,rowH);
+            ofSetColor((sel||entryHover)?colYellow_:colCyan_);
             ofDrawBitmapString(entries2[cc].lb,cpx+8,cpy+15+row*rowH);
         }
     }
@@ -1040,7 +1750,8 @@ void SequencerUI::mousePressed(int x,int y,int button){
         float sx,sy; getStepRect(panelStep_,uiY_,sx,sy);
         float ppw=230;
         float ppx=panelOnRight_?sx+stepW_+2:sx-ppw-2;
-        if(ppx+ppw>originX_+SQUARE_W-2) ppx=sx-ppw-2; if(ppx<originX_+2) ppx=originX_+2;
+        if(ppx+ppw>originX_+SQUARE_W-2) ppx=sx-ppw-2;
+        if(ppx<originX_+2) ppx=originX_+2;
         float ppy2=sy;
         if(ppy2+400>monitorTop_+SQUARE_W-10) ppy2=monitorTop_+SQUARE_W-10-400;
         if(ppy2<uiY_+10)  ppy2=uiY_+10;
@@ -1106,12 +1817,7 @@ void SequencerUI::mousePressed(int x,int y,int button){
     for(int v=0;v<voiceCount_;v++){
         if(!voices_[v].panelOpen||!voices_[v].scaleOpen) continue;
         float px,py,pw,ph; getVoicePanelRect(v,px,py,pw,ph);
-        float cx=px+8,cy=py+38;
-        float gly2=cy+62+22+22+26+22+22+22;
-        float ocy2=gly2+22;
-        float aby2=ocy2+26;
-        float laby3=aby2+26;
-        float scy3=laby3+28;
+        float cx=px+8;
         float spx=cx+pw,spy=py+ph-22*22-8;
         const char* sn[]={"major","lydian","lydianb7","mixolydian","naturalMinor","harmonicMin","melodicMin","dorian","phrygian","phrygianDom","locrian","locrianS2","majorPenta","minorPenta","diminished","augmented","minorBlues","majorBlues","wholeTone","chromatic","bebopMajor","bebopDom"};
         if(x>=spx+4&&x<=spx+156&&y>=spy+4&&y<=spy+4+22*22){
@@ -1286,6 +1992,8 @@ void SequencerUI::mousePressed(int x,int y,int button){
         }
         if(voices_[vbHit].delPending&&x>=delX&&x<=delX+delW){
             removeVoice(vbHit);
+            if(panelVoice_==vbHit) panelVoice_=-1;
+            else if(panelVoice_>vbHit) panelVoice_--;
             return;
         }
         if(x>=playX2&&x<=playX2+playW2){
@@ -1307,7 +2015,17 @@ void SequencerUI::mousePressed(int x,int y,int button){
                 return;
             }
         }
-        if(x>=oscX&&x<=oscX+oscW){ voices_[vbHit].oscIndex=(voices_[vbHit].oscIndex+1)%6; selectedOscVoice_=voices_[vbHit].oscIndex; }
+        if(oscW>0.0f&&x>=oscX&&x<=oscX+oscW){
+            voices_[vbHit].oscIndex=stepAvailableSoundSet(voices_[vbHit].oscIndex,1,vbHit);
+            selectedOscVoice_=voices_[vbHit].oscIndex;
+        }
+        return;
+    }
+
+    int tagHit=voiceTagAtPos(x,y,startY);
+    if(tagHit>=0){
+        panelVoice_=(panelVoice_==tagHit)?-1:tagHit;
+        panelStep_=-1;
         return;
     }
 
@@ -1327,20 +2045,226 @@ void SequencerUI::mousePressed(int x,int y,int button){
                 float psx,psy; getStepRect(panelStep_,startY,psx,psy);
                 float ppw=230,pph=400;
                 float ppx=panelOnRight_?psx+stepW_+2:psx-ppw-2; float ppy=psy;
-                if(ppx+ppw>originX_+SQUARE_W-2) ppx=psx-ppw-2; if(ppx<originX_+2) ppx=originX_+2;
-                if(ppy+pph>monitorTop_+SQUARE_W-10) ppy=monitorTop_+SQUARE_W-10-pph; if(ppy<startY+10) ppy=startY+10;
+                if(ppx+ppw>originX_+SQUARE_W-2) ppx=psx-ppw-2;
+                if(ppx<originX_+2) ppx=originX_+2;
+                if(ppy+pph>monitorTop_+SQUARE_W-10) ppy=monitorTop_+SQUARE_W-10-pph;
+                if(ppy<startY+10) ppy=startY+10;
                 if(x>=ppx&&x<=ppx+ppw&&y>=ppy&&y<=ppy+pph) insidePanel=true;
             }
             if(!insidePanel){
                 if(panelStep_==stepIdx) panelStep_=-1;
-                else { panelStep_=stepIdx; panelOnRight_=(stepIdx%COLS<COLS-3); }
+                else { panelStep_=stepIdx; panelVoice_=-1; panelOnRight_=(stepIdx%COLS<COLS-3); }
                 return;
             }
         }
     }
 
+    float mainPanelDx,mainPanelContentY,mainPanelHalfW,mainPanelHalfH;
+    getPanelArea(mainPanelDx,mainPanelContentY,mainPanelHalfW,mainPanelHalfH);
+    bool mainPanelClick = x>=mainPanelDx && x<=mainPanelDx+mainPanelHalfW*2.0f &&
+                          y>=mainPanelContentY && y<=uiY_;
+
+    if(mainPanelClick&&panelVoice_>=0){
+        int v=panelVoice_;
+        VoiceRange& vr=voices_[v];
+        VoiceCommonParam& cp=vr.common;
+        float dx,contentY,halfW,halfH;
+        getPanelArea(dx,contentY,halfW,halfH);
+        float pad=8.0f;
+
+        float pianoX=dx+pad,pianoY2=contentY+pad;
+        float pianoW2=halfW-pad*2,pianoH2=halfH-pad*2;
+        float rX=dx+halfW+pad, rY=contentY+pad, rW=halfW-pad*2;
+        float modeH=24.0f;
+        float subY2=rY+modeH*2.0f+12.0f;
+        float subH2=contentY+halfH-pad-subY2;
+        float subW2=(rW-8.0f)/2.0f;
+        float stepInfoW2=subW2-16.0f;
+        float modeW=((rW-8.0f)/3.0f)*0.9f;
+        float modeTotalW=modeW*3.0f+8.0f;
+        float modeX=rX+rW-modeTotalW;
+        float pianoUsedW2=(pianoW2-8.0f)/12.0f*7.0f;
+        float pianoRight2=dx+pad+pianoUsedW2+8.0f;
+        float stepGap2=max(8.0f,(modeX-pianoRight2-stepInfoW2)/2.0f);
+        float stepInfoX2=pianoRight2+stepGap2;
+        float lSubX2=stepInfoX2;
+        float th14=jbFont14_?jbFont14_->stringHeight("Ag"):14.0f;
+        float th12b=jbFont12_?jbFont12_->stringHeight("Ag"):12.0f;
+        float lineH2=th14+8.0f;
+
+        float soundY2=rY+modeH+4.0f;
+        if(x>=stepInfoX2&&x<=stepInfoX2+stepInfoW2&&y>=soundY2&&y<=soundY2+modeH){
+            vr.oscIndex=stepAvailableSoundSet(vr.oscIndex,1,v);
+            selectedOscVoice_=vr.oscIndex;
+            return;
+        }
+        {
+            float lowerX=dx+pad;
+            float lowerY=contentY+halfH+18.0f;
+            float lowerBottom=uiY_-8.0f;
+            float lowerH=max(0.0f,lowerBottom-lowerY);
+            float lowerW=halfW*2.0f-pad*2.0f;
+            float nextX=lowerX+lowerW-24.0f;
+            float nextY=lowerY+lowerH/2.0f-18.0f;
+            if(x>=nextX&&x<=nextX+24.0f&&y>=nextY&&y<=nextY+36.0f){
+                vr.soundPage=(vr.soundPage+1)%2;
+                return;
+            }
+        }
+        {
+            int setIdx=-1, paramIdx=-1;
+            if(soundParamAtPos(x,y,v,setIdx,paramIdx)){
+                soundDragSet_=setIdx;
+                soundDragParam_=paramIdx;
+                soundDragStartY_=(float)y;
+                soundDragStartVal_=getSoundParamValue(setIdx,paramIdx);
+                return;
+            }
+        }
+
+        if(y>=rY&&y<=rY+modeH&&x>=modeX&&x<=modeX+modeTotalW){
+            applyVoiceCommonToSteps(v);
+            return;
+        }
+
+        if(panelShowPiano_){
+            float pix=pianoX+4,piw=pianoW2-8,piy=pianoY2+4;
+            if(x>=pix-12&&x<=pix-2&&y>=piy&&y<=piy+pianoH2){ cp.pianoOctave=ofClamp(cp.pianoOctave-1,0,10); return; }
+            float voiceKeyW=piw/12.0f;
+            float voiceUsedW=voiceKeyW*7.0f;
+            if(x>=pix+voiceUsedW+2&&x<=pix+voiceUsedW+12&&y>=piy&&y<=piy+pianoH2){ cp.pianoOctave=ofClamp(cp.pianoOctave+1,0,10); return; }
+            if(x>=pix&&x<=pix+voiceUsedW&&y>=piy&&y<=piy+pianoH2){
+                int rootMidi=cp.pianoOctave*12;
+                const int whiteNotes[]={0,2,4,5,7,9,11};
+                const int blackNotes[]={1,3,6,8,10};
+                const int blackSlots[]={0,1,3,4,5};
+                int pc=-1;
+                if(y<=piy+(pianoH2-8.0f)*0.6f){
+                    for(int bi=0;bi<5;bi++){
+                        float bx=pix+(blackSlots[bi]+1.0f)*voiceKeyW-voiceKeyW*0.5f;
+                        if(x>=bx&&x<=bx+voiceKeyW){ pc=blackNotes[bi]; break; }
+                    }
+                }
+                if(pc<0){
+                    int wi=(int)((x-pix)/voiceKeyW);
+                    if(wi>=0&&wi<7) pc=whiteNotes[wi];
+                }
+                if(pc>=0){
+                    int midi=rootMidi+pc;
+                    if(isScaleNote(midi,v)){
+                        cp.noteOverride=(cp.noteOverride==midi)?-1:midi;
+                        applyVoiceCommonToSteps(v);
+                    }
+                }
+                return;
+            }
+
+            float ly2=subY2+lineH2;
+            if(y>=ly2&&y<=ly2+lineH2){
+                if(x>=lSubX2+100&&x<=lSubX2+120){cp.pianoOctave=ofClamp(cp.pianoOctave-1,0,10);return;}
+                if(x>=lSubX2+124&&x<=lSubX2+144){cp.pianoOctave=ofClamp(cp.pianoOctave+1,0,10);return;}
+            }
+            ly2+=lineH2;
+            if(y>=ly2&&y<=ly2+lineH2){
+                float stw=jbFont14_?jbFont14_->stringWidth("SCALE"):(float)5*8.4f;
+                float sx2=lSubX2+(subW2-16.0f-stw)/2.0f;
+                if(x>=sx2&&x<=sx2+stw){vr.scaleOpen=!vr.scaleOpen;return;}
+            }
+            ly2+=lineH2;
+            if(y>=ly2&&y<=ly2+lineH2&&x>=lSubX2&&x<=lSubX2+subW2-16){
+                vr.allLocked=!vr.allLocked;
+                bool lk=vr.allLocked;
+                for(int i=vr.startStep;i<=vr.endStep;i++){
+                    stepData_[i].lockVelocity=lk; stepData_[i].lockGate=lk;
+                    stepData_[i].lockProb=lk; stepData_[i].lockGridDiv=lk;
+                    stepData_[i].lockNoteRepeat=lk; stepData_[i].lockGlide=lk;
+                    stepData_[i].lockOctShift=lk; stepData_[i].lockNote=lk; stepData_[i].lockStrum=lk;
+                }
+                return;
+            }
+
+            if(vr.scaleOpen){
+                float cpx2=modeX, cpy2=subY2+lineH2*2;
+                float panelW2=modeTotalW;
+                float rowH3=18.0f;
+                float maxPanelH2=subH2-lineH2*2-8.0f;
+                if(x>=cpx2&&x<=cpx2+panelW2&&y>=cpy2&&y<=cpy2+maxPanelH2){
+                    const char* sn[]={"major","lydian","lydianb7","mixolydian","naturalMinor","harmonicMin","melodicMin","dorian","phrygian","phrygianDom","locrian","locrianS2","majorPenta","minorPenta","diminished","augmented","minorBlues","majorBlues","wholeTone","chromatic","bebopMajor","bebopDom"};
+                    int row=(int)((y-cpy2)/rowH3);
+                    if(row>=0&&row<2){
+                        float rootW=panelW2/6.0f;
+                        int rootCol=(int)((x-cpx2)/rootW);
+                        int root=row*6+rootCol;
+                        if(root>=0&&root<12){
+                            cp.scaleRoot=root;
+                            applyVoiceScaleToSteps(v);
+                        }
+                    } else if(row>=2&&row<24){
+                        int scaleIdx=row-2;
+                        cp.scaleName=sn[scaleIdx];
+                        applyVoiceScaleToSteps(v);
+                    }
+                    return;
+                }
+            }
+        }
+
+        if(!panelShowParameter_) return;
+
+        float graphX2=modeX, graphW2=modeTotalW;
+        float graphTop2=rY+modeH+26.0f;
+        float graphBottom2=contentY+halfH-pad;
+        float labelBaseline2=graphBottom2-2.0f;
+        float barW2=18.0f;
+        float barGap2=(graphW2-7.0f*barW2)/6.0f;
+        if(barGap2<6.0f){
+            barGap2=6.0f;
+            barW2=(graphW2-6.0f*barGap2)/7.0f;
+        }
+        float barY2=graphTop2+10.0f;
+        float barH2=max(24.0f,labelBaseline2-th12b-2.0f-barY2);
+        float totalBarW2=7.0f*(barW2+barGap2)-barGap2;
+        float bStartX2=graphX2+(graphW2-totalBarW2)/2.0f;
+        {float bx=bStartX2; if(x>=bx&&x<=bx+barW2&&y>=barY2&&y<=barY2+barH2){dragStep_=v;dragType_=0;dragIsVoice_=true;dragVoiceIdx_=v;dragStartY_=y;dragStartVal_=cp.velocity;return;}}
+        {float bx=bStartX2+(barW2+barGap2); if(x>=bx&&x<=bx+barW2&&y>=barY2&&y<=barY2+barH2){dragStep_=v;dragType_=1;dragIsVoice_=true;dragVoiceIdx_=v;dragStartY_=y;dragStartVal_=cp.gate;return;}}
+        {float bx=bStartX2+2*(barW2+barGap2); if(x>=bx&&x<=bx+barW2&&y>=barY2&&y<=barY2+barH2){dragStep_=v;dragType_=2;dragIsVoice_=true;dragVoiceIdx_=v;dragStartY_=y;dragStartVal_=cp.prob;return;}}
+        {
+            float bx=bStartX2+3*(barW2+barGap2);
+            if(x>=bx&&x<=bx+barW2&&y>=barY2&&y<=barY2+barH2){
+                float btnH=(barH2-7*2)/8.0f;
+                int g=(int)((barY2+barH2-y)/(btnH+2))+1;
+                if(g>=1&&g<=8){cp.gridDiv=g;applyVoiceCommonToSteps(v);return;}
+            }
+        }
+        {
+            float bx=bStartX2+4*(barW2+barGap2);
+            if(x>=bx&&x<=bx+barW2&&y>=barY2&&y<=barY2+barH2){
+                float btnH=(barH2-7*2)/8.0f;
+                int r=(int)((barY2+barH2-y)/(btnH+2))+1;
+                if(r>=1&&r<=8){cp.noteRepeat=r;applyVoiceCommonToSteps(v);return;}
+            }
+        }
+        {
+            float bx=bStartX2+5*(barW2+barGap2); float glH=(barH2-4)/2.0f;
+            if(x>=bx&&x<=bx+barW2){
+                if(y>=barY2&&y<=barY2+glH){cp.glide=true;applyVoiceCommonToSteps(v);return;}
+                if(y>=barY2+glH+4&&y<=barY2+glH+4+glH){cp.glide=false;applyVoiceCommonToSteps(v);return;}
+            }
+        }
+        {
+            float bx=bStartX2+6*(barW2+barGap2);
+            if(x>=bx&&x<=bx+barW2&&y>=barY2&&y<=barY2+barH2){
+                const int ov[]={-2,-1,0,1,2};
+                float btnH=(barH2-4.0f*2.0f)/5.0f;
+                int idx=(int)((barY2+barH2-y)/(btnH+2.0f));
+                if(idx>=0&&idx<5){cp.octShift=ov[idx];applyVoiceCommonToSteps(v);return;}
+            }
+        }
+        return;
+    }
+
     // 開いているパネルの内部クリック
-    if(panelStep_>=0){
+    if(mainPanelClick&&panelStep_>=0){
         StepUIData& ds=stepData_[panelStep_];
         float dx,contentY,halfW,halfH;
         getPanelArea(dx,contentY,halfW,halfH);
@@ -1399,95 +2323,97 @@ void SequencerUI::mousePressed(int x,int y,int button){
             if(x>=modeX+modeW*2+8&&x<=modeX+modeTotalW){ds.mode=StepUIData::SKIP; return;}
         }
 
-        if(!panelShowParameter_) return;
+        if(panelShowPiano_){
+            float ly2=subY2;
 
-        float ly2=subY2;
-
-        if(y>=ly2&&y<=ly2+lineH2){ if(abs(x-lockIconX2)<=9){ds.lockNote=!ds.lockNote;return;} }
-        ly2+=lineH2;
-        if(y>=ly2&&y<=ly2+lineH2){
-            if(x>=lSubX2+100&&x<=lSubX2+120){pianoOctave_=ofClamp(pianoOctave_-1,0,10);return;}
-            if(x>=lSubX2+124&&x<=lSubX2+144){pianoOctave_=ofClamp(pianoOctave_+1,0,10);return;}
-        }
-        ly2+=lineH2;
-        if(y>=ly2&&y<=ly2+lineH2){
-            string chordLabel2=ds.chordName.empty()?"CHORD":ds.chordName;
-            float ctw2=jbFont14_?jbFont14_->stringWidth(chordLabel2):(float)chordLabel2.size()*8.4f;
-            float ctx2=lSubX2+(subW2-16.0f-ctw2)/2.0f;
-            if(x>=ctx2&&x<=ctx2+ctw2){ds.chordPanelOpen=!ds.chordPanelOpen;return;}
-        }
-        ly2+=lineH2;
-        if(y>=ly2&&y<=ly2+lineH2&&x>=lSubX2&&x<=lSubX2+subW2-16){
-            int vi3=voiceAtStep(panelStep_);
-            if(vi3>=0){
-                voices_[vi3].allLocked=!voices_[vi3].allLocked;
-                bool lk=voices_[vi3].allLocked;
-                for(int i=voices_[vi3].startStep;i<=voices_[vi3].endStep;i++){
-                    stepData_[i].lockVelocity=lk; stepData_[i].lockGate=lk;
-                    stepData_[i].lockProb=lk; stepData_[i].lockGridDiv=lk;
-                    stepData_[i].lockNoteRepeat=lk; stepData_[i].lockGlide=lk;
-                    stepData_[i].lockOctShift=lk; stepData_[i].lockNote=lk; stepData_[i].lockStrum=lk;
-                }
+            if(y>=ly2&&y<=ly2+lineH2){ if(abs(x-lockIconX2)<=9){ds.lockNote=!ds.lockNote;return;} }
+            ly2+=lineH2;
+            if(y>=ly2&&y<=ly2+lineH2){
+                if(x>=lSubX2+100&&x<=lSubX2+120){pianoOctave_=ofClamp(pianoOctave_-1,0,10);return;}
+                if(x>=lSubX2+124&&x<=lSubX2+144){pianoOctave_=ofClamp(pianoOctave_+1,0,10);return;}
             }
-            return;
-        }
-
-        if(ds.chordPanelOpen){
-            float cpx2=modeX, cpy2=subY2+lineH2*2;
-            float panelW2=modeW;
-            float rowH2=18.0f;
-            float maxPanelH2=subH2-lineH2*2-8.0f;
-            if(x>=cpx2&&x<=cpx2+panelW2&&y>=cpy2&&y<=cpy2+maxPanelH2){
-                int vi=voiceAtStep(panelStep_);
-                int scaleRoot=(vi>=0)?voices_[vi].common.scaleRoot:0;
-                string scaleName=(vi>=0)?voices_[vi].common.scaleName:"naturalMinor";
-                int octave=(vi>=0)?voices_[vi].common.pianoOctave:4;
-                auto scaleNotes=harmony_.getAvailableNotes(scaleName,scaleRoot);
-                std::vector<int> octaveNotes; int startMidi2=octave*12;
-                for(int n:scaleNotes) if(n>=startMidi2&&n<startMidi2+12) octaveNotes.push_back(n);
-                const char* chordTypes2[]={"maj","min","dim","aug","sus2","sus4","maj7","min7","dom7","dim7","m7b5","pow5","pow5oct"};
-                const char* chordLabels2[]={"maj","min","dim","aug","sus2","sus4","maj7","min7","dom7","dim7","m7b5","pow5","p5+8"};
-                const char* noteNames2[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-                int nTypes2=13;
-                struct CE2{int rm;string tn,lb;};
-                std::vector<CE2> entries2; std::set<int> spc2;
-                for(int n:scaleNotes) spc2.insert(n%12);
-                const int iv2[13][7]={{0,4,7,-1,-1,-1,-1},{0,3,7,-1,-1,-1,-1},{0,3,6,-1,-1,-1,-1},{0,4,8,-1,-1,-1,-1},{0,2,7,-1,-1,-1,-1},{0,5,7,-1,-1,-1,-1},{0,4,7,11,-1,-1,-1},{0,3,7,10,-1,-1,-1},{0,4,7,10,-1,-1,-1},{0,3,6,9,-1,-1,-1},{0,3,6,10,-1,-1,-1},{0,7,-1,-1,-1,-1,-1},{0,7,12,-1,-1,-1,-1}};
-                for(int n:octaveNotes){int rp=n%12;for(int t=0;t<nTypes2;t++){bool ok=true;for(int i=0;i<7;i++){if(iv2[t][i]<0)break;if(spc2.find((rp+iv2[t][i])%12)==spc2.end()){ok=false;break;}}if(!ok)continue;entries2.push_back({n,chordTypes2[t],string(noteNames2[n%12])+chordLabels2[t]});}}
-                int ne2=(int)entries2.size();
-                int actionRows2=2;
-                float visH2=min((float)((ne2+actionRows2)*rowH2+8.0f),maxPanelH2);
-                if(y>cpy2+visH2) return;
-                int selIdx2=0; for(int i=0;i<ne2;i++) if(ds.chordName==entries2[i].lb){selIdx2=i;break;}
-                int visRows2=(int)(visH2/rowH2);
-                int entryRows2=max(0,visRows2-actionRows2);
-                int rawRow2=(int)((y-cpy2)/rowH2);
-                if(rawRow2==0){
-                    float dtw2=jbFont12_?jbFont12_->stringWidth(". DELETE"):(float)8*7.2f;
-                    if(!(x>=cpx2+8.0f&&x<=cpx2+8.0f+dtw2)) return;
-                    ds.chordName=""; ds.chordNoteCount=0; ds.chordPanelOpen=false;
-                    for(int p=0;p<7;p++) ds.chordNotes[p]=-1;
-                    return;
-                }
-                if(rawRow2==1){
-                    float ptw2=jbFont12_?jbFont12_->stringWidth(". PANEL OFF"):(float)11*7.2f;
-                    if(!(x>=cpx2+8.0f&&x<=cpx2+8.0f+ptw2)) return;
-                    ds.chordPanelOpen=false;
-                    return;
-                }
-                int scrollOff2=ofClamp(selIdx2-entryRows2/2,0,max(0,ne2-entryRows2));
-                int row2=rawRow2-actionRows2+scrollOff2;
-                if(row2>=0&&row2<ne2){
-                    float etw2=jbFont12_?jbFont12_->stringWidth(entries2[row2].lb):(float)entries2[row2].lb.size()*7.2f;
-                    if(!(x>=cpx2+8.0f&&x<=cpx2+8.0f+etw2)) return;
-                    ds.chordName=entries2[row2].lb;
-                    auto cd=harmony_.getChord(entries2[row2].tn,entries2[row2].rm);
-                    ds.chordNoteCount=0;
-                    for(int n=0;n<(int)cd.intervals.size()&&n<7;n++){ds.chordNotes[n]=cd.intervals[n];ds.chordNoteCount++;}
+            ly2+=lineH2;
+            if(y>=ly2&&y<=ly2+lineH2){
+                string chordLabel2=ds.chordName.empty()?"CHORD":ds.chordName;
+                float ctw2=jbFont14_?jbFont14_->stringWidth(chordLabel2):(float)chordLabel2.size()*8.4f;
+                float ctx2=lSubX2+(subW2-16.0f-ctw2)/2.0f;
+                if(x>=ctx2&&x<=ctx2+ctw2){ds.chordPanelOpen=!ds.chordPanelOpen;return;}
+            }
+            ly2+=lineH2;
+            if(y>=ly2&&y<=ly2+lineH2&&x>=lSubX2&&x<=lSubX2+subW2-16){
+                int vi3=voiceAtStep(panelStep_);
+                if(vi3>=0){
+                    voices_[vi3].allLocked=!voices_[vi3].allLocked;
+                    bool lk=voices_[vi3].allLocked;
+                    for(int i=voices_[vi3].startStep;i<=voices_[vi3].endStep;i++){
+                        stepData_[i].lockVelocity=lk; stepData_[i].lockGate=lk;
+                        stepData_[i].lockProb=lk; stepData_[i].lockGridDiv=lk;
+                        stepData_[i].lockNoteRepeat=lk; stepData_[i].lockGlide=lk;
+                        stepData_[i].lockOctShift=lk; stepData_[i].lockNote=lk; stepData_[i].lockStrum=lk;
+                    }
                 }
                 return;
             }
+
+            if(ds.chordPanelOpen){
+                float cpx2=modeX, cpy2=subY2+lineH2*2;
+                float panelW2=modeW;
+                float rowH2=18.0f;
+                float maxPanelH2=subH2-lineH2*2-8.0f;
+                if(x>=cpx2&&x<=cpx2+panelW2&&y>=cpy2&&y<=cpy2+maxPanelH2){
+                    int vi=voiceAtStep(panelStep_);
+                    int scaleRoot=(vi>=0)?voices_[vi].common.scaleRoot:0;
+                    string scaleName=(vi>=0)?voices_[vi].common.scaleName:"naturalMinor";
+                    int octave=(vi>=0)?voices_[vi].common.pianoOctave:4;
+                    auto scaleNotes=harmony_.getAvailableNotes(scaleName,scaleRoot);
+                    std::vector<int> octaveNotes; int startMidi2=octave*12;
+                    for(int n:scaleNotes) if(n>=startMidi2&&n<startMidi2+12) octaveNotes.push_back(n);
+                    const char* chordTypes2[]={"maj","min","dim","aug","sus2","sus4","maj7","min7","dom7","dim7","m7b5","pow5","pow5oct"};
+                    const char* chordLabels2[]={"maj","min","dim","aug","sus2","sus4","maj7","min7","dom7","dim7","m7b5","pow5","p5+8"};
+                    const char* noteNames2[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+                    int nTypes2=13;
+                    struct CE2{int rm;string tn,lb;};
+                    std::vector<CE2> entries2; std::set<int> spc2;
+                    for(int n:scaleNotes) spc2.insert(n%12);
+                    const int iv2[13][7]={{0,4,7,-1,-1,-1,-1},{0,3,7,-1,-1,-1,-1},{0,3,6,-1,-1,-1,-1},{0,4,8,-1,-1,-1,-1},{0,2,7,-1,-1,-1,-1},{0,5,7,-1,-1,-1,-1},{0,4,7,11,-1,-1,-1},{0,3,7,10,-1,-1,-1},{0,4,7,10,-1,-1,-1},{0,3,6,9,-1,-1,-1},{0,3,6,10,-1,-1,-1},{0,7,-1,-1,-1,-1,-1},{0,7,12,-1,-1,-1,-1}};
+                    for(int n:octaveNotes){int rp=n%12;for(int t=0;t<nTypes2;t++){bool ok=true;for(int i=0;i<7;i++){if(iv2[t][i]<0)break;if(spc2.find((rp+iv2[t][i])%12)==spc2.end()){ok=false;break;}}if(!ok)continue;entries2.push_back({n,chordTypes2[t],string(noteNames2[n%12])+chordLabels2[t]});}}
+                    int ne2=(int)entries2.size();
+                    int actionRows2=2;
+                    float visH2=min((float)((ne2+actionRows2)*rowH2+8.0f),maxPanelH2);
+                    if(y>cpy2+visH2) return;
+                    int selIdx2=0; for(int i=0;i<ne2;i++) if(ds.chordName==entries2[i].lb){selIdx2=i;break;}
+                    int visRows2=(int)(visH2/rowH2);
+                    int entryRows2=max(0,visRows2-actionRows2);
+                    int rawRow2=(int)((y-cpy2)/rowH2);
+                    if(rawRow2==0){
+                        float dtw2=jbFont12_?jbFont12_->stringWidth(". DELETE"):(float)8*7.2f;
+                        if(!(x>=cpx2+8.0f&&x<=cpx2+8.0f+dtw2)) return;
+                        ds.chordName=""; ds.chordNoteCount=0; ds.chordPanelOpen=false;
+                        for(int p=0;p<7;p++) ds.chordNotes[p]=-1;
+                        return;
+                    }
+                    if(rawRow2==1){
+                        float ptw2=jbFont12_?jbFont12_->stringWidth(". PANEL OFF"):(float)11*7.2f;
+                        if(!(x>=cpx2+8.0f&&x<=cpx2+8.0f+ptw2)) return;
+                        ds.chordPanelOpen=false;
+                        return;
+                    }
+                    int scrollOff2=ofClamp(selIdx2-entryRows2/2,0,max(0,ne2-entryRows2));
+                    int row2=rawRow2-actionRows2+scrollOff2;
+                    if(row2>=0&&row2<ne2){
+                        float etw2=jbFont12_?jbFont12_->stringWidth(entries2[row2].lb):(float)entries2[row2].lb.size()*7.2f;
+                        if(!(x>=cpx2+8.0f&&x<=cpx2+8.0f+etw2)) return;
+                        ds.chordName=entries2[row2].lb;
+                        auto cd=harmony_.getChord(entries2[row2].tn,entries2[row2].rm);
+                        ds.chordNoteCount=0;
+                        for(int n=0;n<(int)cd.intervals.size()&&n<7;n++){ds.chordNotes[n]=cd.intervals[n];ds.chordNoteCount++;}
+                    }
+                    return;
+                }
+            }
         }
+
+        if(!panelShowParameter_) return;
 
         float th12b=jbFont12_?jbFont12_->stringHeight("Ag"):12.0f;
         float graphX2=modeX, graphW2=modeTotalW;
@@ -1572,6 +2498,12 @@ void SequencerUI::mousePressed(int x,int y,int button){
 }
 
 void SequencerUI::mouseDragged(int x,int y,int button){
+    if(soundDragSet_>=0&&soundDragParam_>=0){
+        float dy=soundDragStartY_-(float)y;
+        setSoundParamValue(soundDragSet_,soundDragParam_,
+                           soundDragStartVal_+dy*soundParamDragStep(soundDragParam_));
+        return;
+    }
     if(draggingGlobalBpm_){
         float dy=dragStartY_-y;
         globalBpm_=ofClamp(dragStartVal_+dy, 40.0f, 200.0f);
@@ -1648,6 +2580,7 @@ void SequencerUI::mouseReleased(int x,int y,int button){
     draggingGlobalBpm_=false; draggingGlobalVolume_=false;
     panelDragVoice_=-1;
     dragStep_=-1; dragType_=-1; dragIsVoice_=false; dragVoiceIdx_=-1;
+    soundDragSet_=-1; soundDragParam_=-1;
     if(pendingClickStep_>=0){
         cycleStepMode(pendingClickStep_);
         pendingClickStep_=-1; pendingEdgeVoice_=-1;
@@ -1680,7 +2613,14 @@ void SequencerUI::mouseReleased(int x,int y,int button){
         if(gestureAnchor_>=0&&gestureLive_>=0&&gestureAnchor_!=gestureLive_){
             int s=min(gestureAnchor_,gestureLive_);
             int e=max(gestureAnchor_,gestureLive_);
-            if(e-s+1>=MIN_VOICE_LEN) addVoiceRange(s,e);
+            if(e-s+1>=MIN_VOICE_LEN) {
+                int beforeCount = voiceCount_;
+                addVoiceRange(s,e);
+                if(voiceCount_ > beforeCount) {
+                    panelVoice_ = voiceCount_ - 1;
+                    panelStep_ = -1;
+                }
+            }
         }
         groupGesture_=GroupGesture::NONE; gestureAnchor_=-1; gestureLive_=-1;
     }
@@ -1728,6 +2668,85 @@ void SequencerUI::mouseScrolled(int x,int y,float scrollX,float scrollY){
                 cp.scaleName=sn[cur];
                 return;
             }
+        }
+        return;
+    }
+    if(panelVoice_>=0){
+        int v=panelVoice_;
+        VoiceRange& vr=voices_[v];
+        VoiceCommonParam& cp=voices_[v].common;
+        float dx,contentY,halfW,halfH;
+        getPanelArea(dx,contentY,halfW,halfH);
+        float pad=8.0f;
+        float pianoX=dx+pad,pianoY2=contentY+pad;
+        float pianoW2=halfW-pad*2,pianoH2=halfH-pad*2;
+        float pianoUsedW=(pianoW2-8.0f)/12.0f*7.0f+8.0f;
+        float rX=dx+halfW+pad, rY=contentY+pad, rW=halfW-pad*2;
+        float modeH=24.0f;
+        float subW2=(rW-8.0f)/2.0f;
+        float stepInfoW2=subW2-16.0f;
+        float modeW=((rW-8.0f)/3.0f)*0.9f;
+        float modeTotalW=modeW*3.0f+8.0f;
+        float modeX=rX+rW-modeTotalW;
+        float pianoRight2=dx+pad+(pianoW2-8.0f)/12.0f*7.0f+8.0f;
+        float stepGap2=max(8.0f,(modeX-pianoRight2-stepInfoW2)/2.0f);
+        float stepInfoX2=pianoRight2+stepGap2;
+        float soundY2=rY+modeH+4.0f;
+        if(x>=stepInfoX2&&x<=stepInfoX2+stepInfoW2&&y>=soundY2&&y<=soundY2+modeH){
+            int delta=scrollY>0?1:-1;
+            vr.oscIndex=stepAvailableSoundSet(vr.oscIndex,delta,v);
+            selectedOscVoice_=vr.oscIndex;
+            return;
+        }
+        {
+            float lowerX=dx+pad;
+            float lowerY=contentY+halfH+18.0f;
+            float lowerBottom=uiY_-8.0f;
+            float lowerH=max(0.0f,lowerBottom-lowerY);
+            float lowerW=halfW*2.0f-pad*2.0f;
+            float nextX=lowerX+lowerW-24.0f;
+            float nextY=lowerY+lowerH/2.0f-18.0f;
+            if(x>=nextX&&x<=nextX+24.0f&&y>=nextY&&y<=nextY+36.0f){
+                int delta=scrollY>0?1:-1;
+                vr.soundPage=(vr.soundPage+delta+2)%2;
+                return;
+            }
+        }
+        {
+            int setIdx=-1, paramIdx=-1;
+            if(soundParamAtPos(x,y,v,setIdx,paramIdx)){
+                setSoundParamValue(setIdx,paramIdx,
+                    getSoundParamValue(setIdx,paramIdx)+scrollY*soundParamWheelStep(paramIdx));
+                return;
+            }
+        }
+        if(panelShowPiano_&&x>=pianoX&&x<=pianoX+pianoUsedW&&y>=pianoY2&&y<=pianoY2+pianoH2){
+            cp.pianoOctave=ofClamp(cp.pianoOctave+(scrollY>0?1:-1),0,10);
+            return;
+        }
+        if(!panelShowParameter_) return;
+        float th12=jbFont12_?jbFont12_->stringHeight("Ag"):12.0f;
+        float graphX2=modeX, graphW2=modeTotalW;
+        float graphTop2=rY+modeH+26.0f;
+        float graphBottom2=contentY+halfH-pad;
+        float labelBaseline2=graphBottom2-2.0f;
+        float barW2=18.0f;
+        float barGap2=(graphW2-7.0f*barW2)/6.0f;
+        if(barGap2<6.0f){
+            barGap2=6.0f;
+            barW2=(graphW2-6.0f*barGap2)/7.0f;
+        }
+        float barY2=graphTop2+10.0f;
+        float barH2=max(24.0f,labelBaseline2-th12-2.0f-barY2);
+        float totalBarW2=7.0f*(barW2+barGap2)-barGap2;
+        float bStartX2=graphX2+(graphW2-totalBarW2)/2.0f;
+        if(x>=bStartX2&&x<=bStartX2+totalBarW2&&y>=barY2&&y<=barY2+barH2){
+            float bx=bStartX2;
+            if(x<=bx+barW2){cp.velocity=ofClamp(cp.velocity+(int)(scrollY*5),0,127);applyVoiceCommonToSteps(v);return;}
+            bx+=barW2+barGap2;
+            if(x<=bx+barW2){cp.gate=ofClamp(cp.gate+scrollY*0.05f,0.0f,1.0f);applyVoiceCommonToSteps(v);return;}
+            bx+=barW2+barGap2;
+            if(x<=bx+barW2){cp.prob=ofClamp(cp.prob+scrollY*0.05f,0.0f,1.0f);applyVoiceCommonToSteps(v);return;}
         }
         return;
     }
